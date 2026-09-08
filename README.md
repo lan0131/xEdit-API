@@ -1,147 +1,169 @@
-# xEdit
+# xEdit-API
 
-xEdit by ElminsterAU. The editing and conflict-resolution tool for Bethesda game plugins — Oblivion through Starfield.
+A fork of **[TES5Edit/TES5Edit](https://github.com/TES5Edit/TES5Edit)** (the xEdit codebase by ElminsterAU) that adds an **in-process HTTP/JSON API** to xEdit — primarily for **SSEEdit (Skyrim Special Edition)** — so external programs can:
 
-## Maintainers and Contributors
+- read the loaded plugin list, load order, ESM/ESL flags and master dependencies;
+- list and inspect records, their override chains, winning overrides and referencers;
+- dump a record's element tree as JSON;
+- **edit record fields**, **create patch plugins** and **save plugins to disk** — over plain HTTP.
 
-**Author and upstream maintainer:** [ElminsterAU](https://github.com/ElminsterAU) (since 2006)
+**Verified environment:** Windows + **Delphi 13 Community Edition (RAD Studio 37.0)**, target config `LiteDebug / Win64`, based on upstream `dev-4.1.6`.
 
-**Co-maintainer:** [robertgk2017](https://github.com/robertgk2017) — record definitions across all supported game formats, BSArch/BSArchPro, core editor fixes; integration point for incoming contributions
+> 中文版见 **[README.zh-CN.md](README.zh-CN.md)**.
 
-**Regular contributors:** [Jonathan Ostrus](https://github.com/jbostrus), [fireundubh](https://github.com/fireundubh), [eckserah](https://github.com/eckserah)
+---
 
-**LOD tooling (xLODGen/DynDOLOD):** Sheson
+## 1. What was added (vs. upstream)
 
-**Historical maintainers (2012–2019):** Hlp, Zilav, Sharlikran
+| New file / change | Purpose |
+|---|---|
+| `Core/wbApiServer.pas` (~1700 lines) | localhost HTTP/1.1 + JSON server: `-api` switch parsing, background accept thread, **VCL main-thread job pump**, optional bearer token, all read/write handlers |
+| `xEdit.dpr`, `xEdit\xeInit.pas`, `xEdit\xeMainForm.pas` | thin wiring: register unit, parse `-api` switches, start the server after plugins load, register GUI-backed handlers (create file / save all) |
+| `api-client/xedit_api_client.py` | zero-dependency Python client (`status / plugins / records / record / tree / set / save / patch`) |
+| `tools/delphi13-compat/` | patches needed to build this codebase with **Delphi 13** (see §3), re-appliable after submodule updates |
+| `API_SERVER_DESIGN.md`, `DEV_SETUP_M0.md` | design docs and environment/build notes (Chinese) |
 
-See the [contributors graph](https://github.com/TES5Edit/TES5Edit/graphs/contributors) and [whatsnew.md](whatsnew.md) for per-release attribution.
+Architecture in one paragraph: xEdit data structures are bound to the VCL main thread, so a background socket thread only accepts connections and parses HTTP; every request becomes a job that is executed on the main thread through a `TTimer` pump, and the answer is written back when the job finishes. JSON is produced/parsed with `JsonDataObjects` (already bundled). All record/file work reuses the same internal APIs the GUI and edit-scripts use.
 
-## GitHub Issue Tracker
+---
 
-Our [GitHub issue tracker](https://github.com/TES5Edit/TES5Edit/issues) offers a place to submit and discuss feature requests and bug reports. When using it, please ensure that any criticism you provide is constructive.
+## 2. Usage
 
-Please do not use the tracker for general help and support on how to use xEdit.
+### 2.1 Build
 
-## Releases
+See §3 for prerequisites. After a successful IDE build you get `Build\xEdit.exe`.
 
-The most recent builds are available through the [xEdit Discord](https://discord.com/invite/5t8RnNQ) in the `#xedit-builds` channel. The archive provided here is generic and works with all current game modes. See the [xEdit Versions](#xedit-versions) table in this document on how to properly use it.
+### 2.2 Run
 
-Less frequently updated already renamed packages can be found on the following pages:
+```bat
+:: copy once
+copy Build\xEdit.exe Build\SSEEdit.exe
 
-### xEdit Releases
+:: start with the API enabled (place in the game Data folder if it can't find the game)
+SSEEdit.exe -SSE -api:7000
 
-- [FO3Edit](http://www.nexusmods.com/fallout3/mods/637)
-- [FNVEdit](http://www.nexusmods.com/newvegas/mods/34703)
-- [FO4Edit](http://www.nexusmods.com/fallout4/mods/2737)
-- [FO4VREdit](http://www.nexusmods.com/fallout4/mods/2737)
-- [TES4Edit](http://www.nexusmods.com/oblivion/mods/11536)
-- [TES5Edit](http://www.nexusmods.com/skyrim/mods/25859)
-- [TES5VREdit](http://www.nexusmods.com/skyrim/mods/25859)
-- [SSEEdit](http://www.nexusmods.com/skyrimspecialedition/mods/164)
-- [FO76Edit](https://www.nexusmods.com/fallout76/mods/30)
-- [SF1Edit](https://www.nexusmods.com/starfield/mods/239)
-- [Mirror](https://github.com/TES5Edit/TES5Edit/releases)
+:: optional auth token (required on every call except GET /api/status)
+SSEEdit.exe -SSE -api:7000 -apitoken:mysecret
+```
 
-### xLODGen Releases
+Load plugins normally in the GUI. When loading finishes the API is listening on `http://127.0.0.1:7000`.
 
-- [FO3LODGen](http://www.nexusmods.com/fallout3/mods/21174)
-- [FNVLODGen](http://www.nexusmods.com/newvegas/mods/58562)
-- [TES4LODGen](http://www.nexusmods.com/oblivion/mods/15781)
-- [TES5LODGen](http://www.nexusmods.com/skyrim/mods/62698)
-- [TES5VRLODGen](http://www.nexusmods.com/skyrim/mods/62698)
-- [SSELODGen](http://www.nexusmods.com/skyrimspecialedition/mods/6642/?)
+### 2.3 Quick check
 
-## User Documentation
+```powershell
+python api-client\xedit_api_client.py status
+python api-client\xedit_api_client.py plugins
+python api-client\xedit_api_client.py record --record 00013740 --file "SCSI-RaceGlory.esp"
+curl -s http://127.0.0.1:7000/api/status
+```
 
-### xEdit Cleaning Guide
+---
 
-With the 4.0 update, all previous guides are obsolete. Refer to [xEdit Quick Auto Clean](https://tes5edit.github.io/docs/7-mod-cleaning-and-error-checking.html#ThreeEasyStepstocleanMods).
+## 3. Building from a fresh clone of this fork
 
-### Manuals
+1. **Delphi 13 CE** installed (Community Edition; command-line compilation is disabled by the license, use the IDE).
+2. Initialize submodules:
+   ```bat
+   git submodule update --init --recursive
+   ```
+3. Re-apply the Delphi 13 compatibility patches (required until upstream ships them):
+   ```bat
+   tools\delphi13-compat\apply-patches.cmd
+   ```
+   (copies `jcld29win32/64.inc` into jcl and applies the SynEdit + JVCL diffs. Re-run after `git submodule update`.)
+4. Open `xEdit.dproj` in Delphi; Configuration = **LiteDebug**, Platform = **Win64**; `Project -> Build` (`Ctrl+Shift+F9`).
+   - The “Error Reading Form: 'frmMain' … VirtualEditTree” dialog on open is **expected** (no design-time VirtualTree package installed). Click **Cancel** — it does not affect compilation. Never save from the form designer.
+5. Output: `Build\xEdit.exe` → rename to `SSEEdit.exe` or run with `-SSE`.
 
-- [Fallout3 Training Manual](https://www.nexusmods.com/fallout3/mods/8629) for FO3Edit (applies to all game versions)
-- [Fallout New Vegas Training Manual](https://www.nexusmods.com/newvegas/mods/38413) for FO3Edit (applies to all game versions)
+---
 
-### Online Documentation
+## 4. API reference
 
-EpFwip started an HTML conversion of the Fallout 3 Training Manual many years ago. With the help of GhPages and Jekyll online documentation for xEdit is now available. New screenshots of the Fallout 3 examples that Miax and JustinOther presented will be added as time permits. Also, the website will continue to evolve over time.
+Conventions:
 
-However, for now consider what the Tome of xEdit presents as a current resource for xEdit functionality. The previous PDF file presented step-by-step illustrations of the built-in functions available to xEdit. While the UI itself has had few changes over time the functions work the same and only certain functions are game-specific.
+- Base URL `http://127.0.0.1:7000` (override with `-api:<port>`).
+- Responses: success `{"ok": true, ...}`; failure `{"ok": false, "error": {"code", "message"}}`.
+- FormIDs are **8-hex load-order FormIDs**, e.g. `030008D2`.
+- Auth: header `Authorization: Bearer <token>` (only when started with `-apitoken`; `/api/status` stays open).
 
-The online documentation is available from the Help button built into the developmental version of xEdit or you can view it [from here](https://tes5edit.github.io/docs/).
+| Method & path | Description |
+|---|---|
+| `GET /api/status` | version, game/tool mode, `pluginsLoaded`, port |
+| `GET /api/plugins` | load-ordered plugin list: fileName, fileID, ESM/ESL/medium/update flags, full/light/medium master lists |
+| `GET /api/plugins/{fileName}` | single plugin details (same fields) |
+| `GET /api/plugins/{fileName}/records?signature=&editorID=&offset=&limit=&names=` | paged record list (limit ≤ 500; `signature` exact, `editorID` substring) |
+| `GET /api/plugins/{fileName}/records/{loadOrderFormID}` | record metadata + full override chain (master, all overrides, winning override) |
+| `GET /api/records/{loadOrderFormID}` | resolve a record across the whole load order + override chain |
+| `GET /api/plugins/{fileName}/records/{loadOrderFormID}/tree?depth=N` | element tree JSON (`name` / `path` / `value` / `children`; depth default 8, max 20) |
+| `POST /api/plugins/{fileName}/records/{loadOrderFormID}/values` | batch-edit fields. Body: `{"values": {"FULL - Name": "New name"}}` — keys are the display-name paths shown by `tree` |
+| `POST /api/plugins/{fileName}/save` | persist dirty plugins using the same code path as the GUI **Save** button (saves *all* dirty plugins, with backups/atomic rename) |
+| `POST /api/patch` | create a patch plugin. Body example: `{"fileName": "zz_api_patch.esp", "records": [{"formID": "00013740", "file": "SCSI-RaceGlory.esp", "winning": false}]}` → creates the file (added to the GUI), copies each record as an override with required masters (`element.CopyInto`), then `SortMasters`/`CleanMasters`. Optional `"autoSave": true` |
 
-## Developer Documentation
+### Examples
 
-Getting started with xEdit development requires a properly configured Delphi environment. The following instructions should get you through the minimal viable setup.
+```powershell
+# change a record's name
+python api-client\xedit_api_client.py set --file "SCSI-RaceGlory.esp" --record 00013740 --values-file api-client\sample-values.json
 
-### Install Delphi
+# save it
+python api-client\xedit_api_client.py save --file "SCSI-RaceGlory.esp"
 
-If you don't already have a Delphi environment, we recommend using [Delphi 12 Community Edition](https://www.embarcadero.com/products/delphi/starter).
+# build a patch plugin with two RACE overrides
+python api-client\xedit_api_client.py patch --patch-file api-client\sample-patch.json
 
-### Install Dependencies
+# ... then save the new file too
+python api-client\xedit_api_client.py save --file "zz_api_patch.esp"
+```
 
-- Download and install [Project Magician](https://www.uweraabe.de/Blog/downloads/download-info/project-magician/).
-- Download and install [DDevExtensions](https://github.com/DelphiPraxis/DDevExtensions/releases).
-- Launch Delphi and navigate to Tools &rarr; DDevExtensions Options.
-- Under Extended IDE Settings, 
-  - **enable** the _Disable Package Cache_ option.
-- Under Form Designer,
-  - **enable** the _Do not store the Explicit properties into the DFM_ option.
-- Exit Delphi.
-- Clone the xEdit repo (if you haven't already) and initialize submodules (run `git submodule update --init --recursive` from the git root).
-- Navigate to the _External\jcl\jcl\source\include\\_ directory and copy **jcl.template.inc** to **jcld29win32.inc**. To build xEdit 64 bit, copy **jcl.template.inc** again, to **jcld29win64.inc**
-- Open _External\jcl\jcl\packages\JclPackagesD290.groupproj_.
-- Build All, then install all packages (non-runtime packages with green icons).
-- Restart Delphi.
-- Open _External\jvcl\jvcl\packages\D29 Packages.groupproj_.
-- Navigate to Tools &rarr; Options.
-- Under Language &rarr; Delphi, add the below paths to the _Library_ option:
-  - _{TES5Edit repo}\External\jcl\jcl\lib\d29\win32_
-  - _{TES5Edit repo}\External\jcl\jcl\source\include_
-- Build All, then install all packages (non-runtime packages with green icons).
-- Restart Delphi.
-- Navigate to Tools &rarr; Options.
-- Under Language &rarr; Delphi, add the below path to the _Library_ option:
-  - _{TES5Edit repo}\External\jvcl\jvcl\lib\d29\win32_
-- Restart Delphi.
-- Open _External\VirtualTrees\Packages\RAD Studio 12\VirtualTreeView.groupproj_.
-- Build All, then install **VirtualTreesD29.bpl**.
-- Open _External\FileContainer\FileContainer29.groupproj_.
-- Build All, then install **FileContainerD29.bpl**.
+`tree` output looks like:
 
-### Important Note
+```json
+{ "ok": true, "plugin": "SCSI-RaceGlory.esp", "loadOrderFormID": "00013740",
+  "tree": { "name": "ArgonianRace \"Argonian\" [RACE:00013740]", "path": "RACE",
+            "children": [
+              { "name": "EDID - Editor ID", "path": "RACE \\ EDID - Editor ID" },
+              { "name": "FULL - Name", "path": "RACE \\ FULL - Name" }
+            ] } }
+```
 
-If you don't have commercial [DevExpress](https://www.devexpress.com/) components, you'll need to open _BethWorkBench.groupproj_ and ensure the Build Configuration is set to `LiteDebug`.
+---
 
-## xEdit versions
+## 5. Known limitations & roadmap
 
-All xEdit executable files can support all game modes. To choose which mode to use either:
-* Launch the application using the command line argument
-* Rename the xEdit executable to include the game mode
+- `save` = “save all dirty plugins” (same semantics as the GUI Save), not a per-file report yet.
+- `/api/status` `busy` currently also counts the request that is being answered.
+- Very large records (huge arrays / navmeshes) make `tree` slow; a compact mode is planned.
+- Element paths are xEdit display-name paths; short/signature aliases are planned.
+- Threading: everything runs on the xEdit main thread (same guarantees as doing it in the GUI); long operations block the GUI briefly.
 
+Roadmap (M4): single-file save reporting, `busy` fix, compact tree mode, short-path aliases, `/api/shutdown`.
 
-| Game                | Executable Name     | Argument     |
-|---------------------|---------------------|--------------|
-| Enderal             | `EnderalEdit.exe`   | -Enderal     |
-| Enderal SE          | `EnderalSEEdit.exe` | -EnderalSE   |
-| Oblivion            | `TES4Edit.exe`      | -TES4        |
-| Oblivion Remastered | `TES4REdit.exe`     | -TES4R       |
-| Skyrim              | `TES5Edit.exe`      | -TES5        |
-| Skyrim SE           | `SSEEdit.exe`       | -SSE         |
-| Skyrim VR           | `TES5VREdit.exe`    | -TES5VR      |
-| Fallout 3           | `FO3Edit.exe`       | -FO3         |
-| Fallout: New Vegas  | `FNVEdit.exe`       | -FNV         |
-| Fallout 4           | `FO4Edit.exe`       | -FO4         |
-| Fallout 4 VR        | `FO4VREdit.exe`     | -FO4VR       |
-| Fallout 76          | `FO76Edit.exe`      | -FO76        |
-| Starfield           | `SF1Edit.exe`       | -SF1         |
+---
 
-## xEdit Updates
+## 6. Developing on this fork
 
-With each new version of xEdit, it is recommended to restore plugins from backups and reclean them. Otherwise, any fixes and updates to the cleaning process won't take effect.
+Remote layout that we recommend (already set up in the original workspace):
 
-### Changelog
+```bat
+git remote rename origin upstream                      :: the original TES5Edit repo
+git remote add origin git@github.com:<you>/xEdit-API.git
+git switch -c dev-4.1.6-api
+git push -u origin dev-4.1.6-api
+```
 
-See the [What's New](whatsnew.md) or view the `What's New` tab inside the application.
+Sync upstream later:
 
-The Changelog has been moved to the What's New document.
+```bat
+git fetch upstream
+git merge upstream/dev-4.1.6        :: or: git rebase upstream/dev-4.1.6
+git submodule update --init --recursive
+tools\delphi13-compat\apply-patches.cmd
+```
+
+Code pointers:
+
+- `Core/wbApiServer.pas` — the whole server. New endpoints = add a route in `TwbApiServer.HandleRequest` + a handler method that runs on the main thread and answers with `RespondJson`.
+- Handlers that need GUI services (create a plugin file, save-all) go through the registered callbacks `wbApiServerSetAddFileHandler` / `wbApiServerSetSaveAllHandler` (registered in `xeMainForm.WMUserLoaderDone`) — the Core unit stays GUI-free.
+- Do not touch `wbInterface.pas` / `wbImplementation.pas` / record definitions; keep the diff small for easy merging with upstream.
+
+Credits & license: upstream xEdit by ElminsterAU and contributors ([repo](https://github.com/TES5Edit/TES5Edit), MPL-2.0). This fork keeps the MPL-2.0 license and headers.
