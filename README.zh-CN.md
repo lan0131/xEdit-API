@@ -64,7 +64,7 @@ curl -s http://127.0.0.1:7000/api/status
    ```
 3. 重放 Delphi 13 兼容补丁（上游尚未合并前每次都需要）：
    ```bat
-   tools\delphi13-compat\apply-patches.cmd
+   Tools\delphi13-compat\apply-patches.cmd
    ```
    （该脚本把 `jcld29win32/64.inc` 复制进 jcl，并应用 SynEdit、JVCL 的三处 diff；`git submodule update` 之后重跑一次即可。）
 4. 用 Delphi 打开 `xEdit.dproj`：Configuration = **LiteDebug**、Platform = **Win64**，菜单 `Project → Build`（Ctrl+Shift+F9）。
@@ -153,7 +153,7 @@ git push -u origin dev-4.1.6-api
 git fetch upstream
 git merge upstream/dev-4.1.6        :: 或 git rebase upstream/dev-4.1.6
 git submodule update --init --recursive
-tools\delphi13-compat\apply-patches.cmd
+Tools\delphi13-compat\apply-patches.cmd
 ```
 
 代码指引：

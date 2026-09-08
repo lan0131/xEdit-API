@@ -68,7 +68,7 @@ curl -s http://127.0.0.1:7000/api/status
    ```
 3. Re-apply the Delphi 13 compatibility patches (required until upstream ships them):
    ```bat
-   tools\delphi13-compat\apply-patches.cmd
+   Tools\delphi13-compat\apply-patches.cmd
    ```
    (copies `jcld29win32/64.inc` into jcl and applies the SynEdit + JVCL diffs. Re-run after `git submodule update`.)
 4. Open `xEdit.dproj` in Delphi; Configuration = **LiteDebug**, Platform = **Win64**; `Project -> Build` (`Ctrl+Shift+F9`).
@@ -157,7 +157,7 @@ Sync upstream later:
 git fetch upstream
 git merge upstream/dev-4.1.6        :: or: git rebase upstream/dev-4.1.6
 git submodule update --init --recursive
-tools\delphi13-compat\apply-patches.cmd
+Tools\delphi13-compat\apply-patches.cmd
 ```
 
 Code pointers:
