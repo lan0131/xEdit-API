@@ -122,6 +122,13 @@ type
     procedure   HandleRecordValues(aJob: TwbApiJob; const aFile: IwbFile;
                                    const aFormID: TwbFormID);
     procedure   HandleFileSave(aJob: TwbApiJob; const aFile: IwbFile);
+    procedure   HandleAddMasters(aJob: TwbApiJob; const aFile: IwbFile);
+    function    FindTopLevelElement(const aRecord: IwbMainRecord;
+                                    const aName: string): IwbElement;
+    procedure   HandleCopyElements(aJob: TwbApiJob; const aFile: IwbFile;
+                                   const aFormID: TwbFormID);
+    procedure   HandleMergeEffects(aJob: TwbApiJob; const aFile: IwbFile;
+                                   const aFormID: TwbFormID);
     procedure   HandlePatch(aJob: TwbApiJob);
     function    RecordsPageJson(aFile: IwbFile; const aSignature, aEditorID: string;
                                aOffset, aLimit: Integer; aWithNames: Boolean;
@@ -659,6 +666,10 @@ begin
           HandleFileSave(aJob, f);
           Exit;
         end;
+        if (n = 3) and (parts[2] = 'addmasters') then begin
+          HandleAddMasters(aJob, f);
+          Exit;
+        end;
         if (n = 4) and (parts[2] = 'records') then begin
           var fid: Cardinal;
           if not wbApiParseFormID(parts[3], fid) then begin
@@ -681,6 +692,14 @@ begin
           end;
           if parts[4] = 'values' then begin
             HandleRecordValues(aJob, f, TwbFormID.FromCardinal(fid));
+            Exit;
+          end;
+          if parts[4] = 'copy-elements' then begin
+            HandleCopyElements(aJob, f, TwbFormID.FromCardinal(fid));
+            Exit;
+          end;
+          if parts[4] = 'merge-effects' then begin
+            HandleMergeEffects(aJob, f, TwbFormID.FromCardinal(fid));
             Exit;
           end;
           RespondError(aJob, 404, 'not_found', 'Unknown endpoint: ' + aJob.Request.Path);
@@ -988,42 +1007,36 @@ end;
 
 function TwbApiServer.ElementToJson(const aElement: IwbElement; aDepth: Integer): string;
 var
-  sb  : TStringBuilder;
-  cef : IwbContainerElementRef;
-  c   : IwbContainerBase;
-  i   : Integer;
-  v   : string;
+  sb     : TStringBuilder;
+  cef    : IwbContainerElementRef;
+  c      : IwbContainerBase;
+  i, cnt : Integer;
+  v      : string;
 begin
   sb := TStringBuilder.Create;
   try
     sb.Append('{"name":').Append(wbApiJsonString(aElement.Name));
     sb.Append(',"path":').Append(wbApiJsonString(aElement.Path));
-    if aDepth > 0 then begin
-      if Supports(aElement, IwbContainerElementRef, cef) then begin
-        sb.Append(',"children":[');
-        for i := 0 to Pred(cef.ElementCount) do begin
-          if i > 0 then
-            sb.Append(',');
-          sb.Append(ElementToJson(cef.Elements[i], aDepth - 1));
-        end;
-        sb.Append(']');
-      end else if Supports(aElement, IwbContainerBase, c) then begin
-        sb.Append(',"children":[');
-        for i := 0 to Pred(c.ElementCount) do begin
-          if i > 0 then
-            sb.Append(',');
+
+    cnt := -1;
+    if Supports(aElement, IwbContainerElementRef, cef) then
+      cnt := cef.ElementCount
+    else if Supports(aElement, IwbContainerBase, c) then
+      cnt := c.ElementCount;
+
+    if (aDepth > 0) and (cnt > 0) then begin
+      sb.Append(',"children":[');
+      for i := 0 to Pred(cnt) do begin
+        if i > 0 then
+          sb.Append(',');
+        if Supports(aElement, IwbContainerElementRef, cef) then
+          sb.Append(ElementToJson(cef.Elements[i], aDepth - 1))
+        else
           sb.Append(ElementToJson(c.Elements[i], aDepth - 1));
-        end;
-        sb.Append(']');
-      end else begin
-        try
-          v := aElement.Value;
-        except
-          v := '';
-        end;
-        sb.Append(',"value":').Append(wbApiJsonString(v));
       end;
+      sb.Append(']');
     end else begin
+      // leaf (or container that could not enumerate children): expose its value
       try
         v := aElement.Value;
       except
@@ -1502,6 +1515,428 @@ begin
     '{"ok":true,"message":"Dirty plugins were saved (same code path as the GUI Save button)"}');
 end;
 
+procedure TwbApiServer.HandleAddMasters(aJob: TwbApiJob; const aFile: IwbFile);
+var
+  jo      : TJsonObject;
+  arr     : TJsonArray;
+  name    : string;
+  i, added, failed : Integer;
+  err     : string;
+begin
+  if aJob.Request.Method <> 'POST' then begin
+    RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
+    Exit;
+  end;
+  jo := nil;
+  try
+    try
+      jo := TJsonObject(TJsonObject.Parse(aJob.Request.Body));
+    except
+      jo := nil;
+    end;
+    if jo = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Body is not valid JSON');
+      Exit;
+    end;
+    arr := jo.A['masters'];
+    if arr = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Missing "masters" array');
+      Exit;
+    end;
+
+    added := 0;
+    failed := 0;
+    for i := 0 to Pred(arr.Count) do begin
+      try
+        name := arr.S[i];
+      except
+        name := '';
+      end;
+      if name = '' then
+        Continue;
+      if SameText(name, aFile.FileName) then
+        Continue;              // never add the file itself as its own master
+      err := '';
+      try
+        aFile.AddMasterIfMissing(name);
+        Inc(added);
+      except
+        on E: Exception do begin
+          err := E.Message;
+          Inc(failed);
+        end;
+      end;
+    end;
+
+    if jo.Contains('sort') and jo.B['sort'] then
+      try
+        aFile.SortMasters;
+      except
+      end;
+
+    RespondJson(aJob, 200,
+      '{"ok":' + wbApiJsonBool(failed = 0) +
+      ',"added":' + IntToStr(added) +
+      ',"failed":' + IntToStr(failed) + '}');
+  finally
+    jo.Free;
+  end;
+end;
+
+function TwbApiServer.FindTopLevelElement(const aRecord: IwbMainRecord;
+                                          const aName: string): IwbElement;
+var
+  cb : IwbContainerBase;
+  i  : Integer;
+begin
+  Result := nil;
+  cb := aRecord;
+  for i := 0 to Pred(cb.ElementCount) do
+    if SameText(cb.Elements[i].Name, aName) then begin
+      Result := cb.Elements[i];
+      Exit;
+    end;
+end;
+
+procedure TwbApiServer.HandleCopyElements(aJob: TwbApiJob; const aFile: IwbFile;
+                                          const aFormID: TwbFormID);
+var
+  jo, src      : TJsonObject;
+  arr          : TJsonArray;
+  tgtRec       : IwbMainRecord;
+  srcRec       : IwbMainRecord;
+  srcFile      : IwbFile;
+  files        : TwbFiles;
+  tgtEl, srcEl : IwbElement;
+  newEl        : IwbElement;
+  sb           : TStringBuilder;
+  i, changed, failed : Integer;
+  name, srcFileName, srcFormIDStr, err : string;
+  srcFID       : Cardinal;
+begin
+  if aJob.Request.Method <> 'POST' then begin
+    RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
+    Exit;
+  end;
+  if aJob.Request.Body = '' then begin
+    RespondError(aJob, 400, 'bad_request',
+      'Body must be {"source":{"file":"X.esp","formID":"hex"},"elements":["DATA - DATA",...]}');
+    Exit;
+  end;
+
+  tgtRec := aFile.ContainedRecordByLoadOrderFormID[aFormID, True];
+  if tgtRec = nil then begin
+    RespondError(aJob, 404, 'not_found',
+      'Target record not found in ' + aFile.FileName + ': ' + IntToHex(aFormID.ToCardinal, 8));
+    Exit;
+  end;
+
+  jo := nil;
+  try
+    try
+      jo := TJsonObject(TJsonObject.Parse(aJob.Request.Body));
+    except
+      jo := nil;
+    end;
+    if jo = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Body is not valid JSON');
+      Exit;
+    end;
+    src := jo.O['source'];
+    if src = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Missing "source" object');
+      Exit;
+    end;
+    arr := jo.A['elements'];
+    if arr = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Missing "elements" array');
+      Exit;
+    end;
+
+    srcFileName := src.S['file'];
+    srcFormIDStr := src.S['formID'];
+    if (srcFileName = '') or not wbApiParseFormID(srcFormIDStr, srcFID) then begin
+      RespondError(aJob, 400, 'bad_request', 'source.file / source.formID invalid');
+      Exit;
+    end;
+
+    srcFile := nil;
+    if Assigned(FFilesProvider) then begin
+      files := FFilesProvider();
+      for var f2 in files do
+        if SameText(f2.FileName, srcFileName) then begin
+          srcFile := f2;
+          Break;
+        end;
+    end;
+    if srcFile = nil then begin
+      RespondError(aJob, 404, 'not_found', 'Source plugin not loaded: ' + srcFileName);
+      Exit;
+    end;
+    srcRec := srcFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(srcFID), True];
+    if srcRec = nil then begin
+      RespondError(aJob, 404, 'not_found',
+        'Source record not found in ' + srcFileName + ': ' + srcFormIDStr);
+      Exit;
+    end;
+
+    changed := 0;
+    failed  := 0;
+    sb := TStringBuilder.Create;
+    try
+      for i := 0 to Pred(arr.Count) do begin
+        try
+          name := arr.S[i];
+        except
+          name := '';
+        end;
+        err := '';
+        if name = '' then
+          err := 'empty element name'
+        else begin
+          tgtEl := FindTopLevelElement(tgtRec, name);
+          if tgtEl = nil then
+            err := 'element not found on target: ' + name
+          else begin
+            srcEl := FindTopLevelElement(srcRec, name);
+            if srcEl = nil then
+              err := 'element not found on source: ' + name
+            else begin
+              try
+                newEl := tgtEl.Assign(wbAssignThis, srcEl, False);
+                Inc(changed);
+              except
+                on E: Exception do
+                  err := E.Message;
+              end;
+            end;
+          end;
+        end;
+
+        if i > 0 then
+          sb.Append(',');
+        if err = '' then
+          sb.Append('{"element":').Append(wbApiJsonString(name)).Append(',"ok":true}')
+        else begin
+          Inc(failed);
+          sb.Append('{"element":').Append(wbApiJsonString(name))
+            .Append(',"ok":false,"error":').Append(wbApiJsonString(err)).Append('}');
+        end;
+      end;
+
+      RespondJson(aJob, 200,
+        '{"ok":' + wbApiJsonBool(failed = 0) +
+        ',"changed":' + IntToStr(changed) +
+        ',"failed":' + IntToStr(failed) +
+        ',"results":[' + sb.ToString + ']}');
+    finally
+      sb.Free;
+    end;
+  finally
+    jo.Free;
+  end;
+end;
+
+// Helper: normalized identity of an actor-effect (SPLO) element, e.g. "SPEL:000AA022".
+function WbApiSpellKey(const aElement: IwbElement): string;
+var
+  v, s : string;
+  p, q : Integer;
+begin
+  Result := '';
+  try
+    v := aElement.Value;
+  except
+    v := '';
+  end;
+  p := Pos('[SPEL:', v);
+  if p > 0 then begin
+    s := Copy(v, p + 6, MaxInt);
+    q := Pos(']', s);
+    if q > 0 then begin
+      Result := Trim(Copy(s, 1, q - 1));
+      Exit;
+    end;
+  end;
+  if Result = '' then
+    Result := aElement.Name;   // fall back to display name
+end;
+
+procedure TwbApiServer.HandleMergeEffects(aJob: TwbApiJob; const aFile: IwbFile;
+                                          const aFormID: TwbFormID);
+var
+  jo, jo2    : TJsonObject;
+  tgtRec, baseRec, scsiRec, ubeRec : IwbMainRecord;
+  baseFile, scsiFile, ubeFile : IwbFile;
+  files      : TwbFiles;
+  tgtAct, baseAct, scsiAct, ubeAct : IwbContainerElementRef;
+  baseKeys, ubeKeys : TStringList;
+  i, j, appended, failed, tgtCount : Integer;
+  srcEl, newEl : IwbElement;
+  key        : string;
+  err        : string;
+  spctEl     : IwbElement;
+begin
+  if aJob.Request.Method <> 'POST' then begin
+    RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
+    Exit;
+  end;
+  jo := nil;
+  try
+    try
+      jo := TJsonObject(TJsonObject.Parse(aJob.Request.Body));
+    except
+      jo := nil;
+    end;
+    if jo = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Body is not valid JSON');
+      Exit;
+    end;
+
+    tgtRec := aFile.ContainedRecordByLoadOrderFormID[aFormID, True];
+    if tgtRec = nil then begin
+      RespondError(aJob, 404, 'not_found',
+        'Target record not found: ' + IntToHex(aFormID.ToCardinal, 8));
+      Exit;
+    end;
+
+    files := Copy(FFilesProvider(), 0, MaxInt);
+
+    // resolve the three reference records
+    baseRec := nil; scsiRec := nil; ubeRec := nil;
+    jo2 := jo.O['base']; if jo2 <> nil then begin
+      for var f2 in files do
+        if SameText(f2.FileName, jo2.S['file']) then begin
+          baseFile := f2;
+          Break;
+        end;
+      if baseFile <> nil then begin
+        var fid: Cardinal;
+        if wbApiParseFormID(jo2.S['formID'], fid) then
+          baseRec := baseFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+      end;
+    end;
+    jo2 := jo.O['scsi']; if jo2 <> nil then begin
+      baseFile := nil;
+      for var f2 in files do
+        if SameText(f2.FileName, jo2.S['file']) then begin
+          scsiFile := f2;
+          Break;
+        end;
+      if scsiFile <> nil then begin
+        var fid: Cardinal;
+        if wbApiParseFormID(jo2.S['formID'], fid) then
+          scsiRec := scsiFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+      end;
+    end;
+    jo2 := jo.O['ube']; if jo2 <> nil then begin
+      baseFile := nil;
+      for var f2 in files do
+        if SameText(f2.FileName, jo2.S['file']) then begin
+          ubeFile := f2;
+          Break;
+        end;
+      if ubeFile <> nil then begin
+        var fid: Cardinal;
+        if wbApiParseFormID(jo2.S['formID'], fid) then
+          ubeRec := ubeFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+      end;
+    end;
+
+    if (baseRec = nil) or (scsiRec = nil) or (ubeRec = nil) then begin
+      RespondError(aJob, 400, 'bad_request', 'Could not resolve base/scsi/ube records');
+      Exit;
+    end;
+
+    if not (Supports(FindTopLevelElement(tgtRec, 'Actor Effects'), IwbContainerElementRef, tgtAct)) then begin
+      RespondError(aJob, 400, 'bad_request', 'Target record has no Actor Effects list');
+      Exit;
+    end;
+    Supports(FindTopLevelElement(baseRec, 'Actor Effects'), IwbContainerElementRef, baseAct);
+    Supports(FindTopLevelElement(scsiRec, 'Actor Effects'), IwbContainerElementRef, scsiAct);
+    Supports(FindTopLevelElement(ubeRec, 'Actor Effects'), IwbContainerElementRef, ubeAct);
+
+    baseKeys := TStringList.Create;
+    ubeKeys  := TStringList.Create;
+    try
+      baseKeys.Sorted := True;
+      baseKeys.Duplicates := dupIgnore;
+      ubeKeys.Sorted := True;
+      ubeKeys.Duplicates := dupIgnore;
+
+      if baseAct <> nil then
+        for i := 0 to Pred(baseAct.ElementCount) do
+          baseKeys.Add(WbApiSpellKey(baseAct.Elements[i]));
+      if ubeAct <> nil then
+        for i := 0 to Pred(ubeAct.ElementCount) do
+          ubeKeys.Add(WbApiSpellKey(ubeAct.Elements[i]));
+
+      appended := 0;
+      failed   := 0;
+      if ubeAct <> nil then
+        for i := 0 to Pred(ubeAct.ElementCount) do begin
+          srcEl := ubeAct.Elements[i];
+          key := WbApiSpellKey(srcEl);
+          // append only UBE-specific effects: not part of the base spell set and
+          // not already present on the target (which holds the SCSI list)
+          if baseKeys.IndexOf(key) >= 0 then
+            Continue;
+          if key = srcEl.Name then begin
+            // unparsed identity; only skip if identical name already exists
+          end;
+          // check target membership
+          var already := False;
+          for j := 0 to Pred(tgtAct.ElementCount) do
+            if SameText(WbApiSpellKey(tgtAct.Elements[j]), key) then begin
+              already := True;
+              Break;
+            end;
+          if already then
+            Continue;
+          err := '';
+          try
+            newEl := tgtAct.Add('SPLO - Actor Effect');
+            if newEl = nil then
+              err := 'could not add SPLO element'
+            else begin
+              newEl.Assign(wbAssignThis, srcEl, False);
+              Inc(appended);
+            end;
+          except
+            on E: Exception do
+              err := E.Message;
+          end;
+          if err <> '' then
+            Inc(failed);
+        end;
+
+      // refresh the SPCT count if a separate count element exists
+      if appended > 0 then begin
+        spctEl := FindTopLevelElement(tgtRec, 'SPCT - Count');
+        if spctEl <> nil then begin
+          tgtCount := 0;
+          if tgtAct <> nil then
+            tgtCount := tgtAct.ElementCount;
+          try
+            spctEl.EditValue := IntToStr(tgtCount);
+          except
+          end;
+        end;
+      end;
+
+      RespondJson(aJob, 200,
+        '{"ok":' + wbApiJsonBool(failed = 0) +
+        ',"appended":' + IntToStr(appended) +
+        ',"failed":' + IntToStr(failed) + '}');
+    finally
+      baseKeys.Free;
+      ubeKeys.Free;
+    end;
+  finally
+    jo.Free;
+  end;
+end;
+
 procedure TwbApiServer.HandlePatch(aJob: TwbApiJob);
 var
   jo       : TJsonObject;
@@ -1569,6 +2004,8 @@ begin
       RespondError(aJob, 400, 'create_failed', 'Could not create plugin file: ' + fileName);
       Exit;
     end;
+    if isLight then
+      newFile.IsLight := True;   // make sure the ESL flag is set on the header
 
     created := 0;
     failed  := 0;
