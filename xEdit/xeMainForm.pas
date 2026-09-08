@@ -20523,6 +20523,18 @@ begin
           Result := frmMain.Files;
         end
       );
+      wbApiServerSetAddFileHandler(
+        function(const aFileName: string; aIsLight, aIsMedium: Boolean): IwbFile
+        begin
+          Result := frmMain.AddNewFileName(aFileName, aIsLight, aIsMedium);
+        end
+      );
+      wbApiServerSetSaveAllHandler(
+        procedure
+        begin
+          frmMain.SaveChanged(True, False);
+        end
+      );
     end;
     wbStartTime := PDateTime(Message.WParam)^;
     LoadOrder := Message.LParam;

@@ -261,6 +261,30 @@ python api-client\xedit_api_client.py --port 7000
 - FormID 一律按 **8 位大写十六进制** 输出/接受（= xEdit 的 loadOrderFormID 数值），如 `030008D2`。
 - 文件列表排序、拷贝数组（不污染 `frmMain.Files`）、全部在主线程执行。
 
-**M3 待办：** 记录元素树 JSON 序列化 → `PUT/POST values` 改字段 → `POST /api/patch` 创建补丁（wbNewFile + 复制记录 + Sort/CleanMasters）→ `save`（走 xEdit 备份路径，入口待 M3 精确定位后封装）。
+---
+
+## 11. M3 已落地并实测通过（写操作）
+
+**新增端点（均已运行时验证）：**
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/plugins/{file}/records/{formid}/tree?depth=N` | 记录元素树 JSON（name/path/value/children，depth 默认 8、上限 20） |
+| `POST /api/plugins/{file}/records/{formid}/values` | 批量改字段：body `{"values": {"FULL - Name": "..."}}`，path 取 tree 输出的显示名路径（如 `FULL - Name`） |
+| `POST /api/plugins/{file}/save` | 落盘：复用 GUI 保存路径（frmMain 注册的 SaveAll 静默回调，保存全部 dirty 插件并走备份/原子改名逻辑） |
+| `POST /api/patch` | 建补丁插件：body `{"fileName":"x.esp","records":[{"formID":"..","file":"可选","winning":可选}]}` → `frmMain.AddNewFileName` 建文件 + 每个记录 `element.CopyInto(newFile,False,True,...)`（自动 Report/AddRequiredMasters）+ `SortMasters/CleanMasters` |
+
+**实现要点：**
+- 树/编辑的根记录遍历用**静态接口链**（IwbMainRecord 继承容器接口），避免根对象 Supports/QueryInterface 的坑；子节点探测优先 `IwbContainerElementRef`。
+- 复制补丁记录用 `IwbElement.CopyInto`（`wbImplementation.pas` 内部已做 required masters 扫描与添加）。
+- GUI 回调（新建文件/静默保存）由 `xeMainForm.WMUserLoaderDone` 注册到 `wbApiServer.pas`（`wbApiServerSetAddFileHandler` / `wbApiServerSetSaveAllHandler`），Core 层不直接依赖 frmMain。
+
+**实测：** 改 RACE 的 `FULL - Name`（changed=1、GUI 变红）、保存落盘、`zz_api_patch.esp` 含 2 条记录覆盖，均通过。
+
+**已知限制/后续（M4 候选）：**
+- `save` 语义 = “保存全部 dirty”（对齐 GUI Save 按钮），非单文件；单文件精准报告待做。
+- `busy` 字段当前会把“正在处理当前请求”计为 busy，语义待修正。
+- 超大记录（巨大数组/网格）的 tree 会偏慢，可加紧凑模式。
+- 元素 path 目前是 xEdit 显示名路径；可加按 signature 短路径别名。
 
 

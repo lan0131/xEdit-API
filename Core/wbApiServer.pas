@@ -51,6 +51,11 @@ const
 type
   // Supplies the currently loaded plugin files (set by xeMainForm).
   TwbApiFilesProvider = reference to function: TwbFiles;
+  // Creates a new plugin through the GUI (adds it to Files and the nav tree).
+  TwbApiAddFileProc = reference to function(const aFileName: string;
+                                            aIsLight, aIsMedium: Boolean): IwbFile;
+  // Silent-save of all dirty plugins (same path as the GUI Save button).
+  TwbApiSaveAllProc = reference to procedure;
 
   TwbApiRequest = record
     Method  : string;             // GET / POST / ...
@@ -109,12 +114,15 @@ type
     function    PluginToJson(const aFile: IwbFile; aIndex: Integer): string;
     function    RecordMetaJson(const aRecord: IwbMainRecord; aWithNames: Boolean): string;
     function    RecordChainJson(const aRecord: IwbMainRecord): string;
+    function    FindRecordAnyFile(const aFormID: TwbFormID): IwbMainRecord;
     function    ElementToJson(const aElement: IwbElement; aDepth: Integer): string;
     function    MainRecordToJson(const aRecord: IwbMainRecord; aDepth: Integer): string;
     procedure   HandleRecordTree(aJob: TwbApiJob; const aFile: IwbFile;
                                  const aFormID: TwbFormID);
     procedure   HandleRecordValues(aJob: TwbApiJob; const aFile: IwbFile;
                                    const aFormID: TwbFormID);
+    procedure   HandleFileSave(aJob: TwbApiJob; const aFile: IwbFile);
+    procedure   HandlePatch(aJob: TwbApiJob);
     function    RecordsPageJson(aFile: IwbFile; const aSignature, aEditorID: string;
                                aOffset, aLimit: Integer; aWithNames: Boolean;
                                out aReturned, aMore: Integer): string;
@@ -140,6 +148,9 @@ procedure wbApiServerConfigureFromCmdLine;                    // parse -api swit
 function  wbApiServerEnabled: Boolean;
 procedure wbApiServerStart(const aFilesProvider: TwbApiFilesProvider); // main thread, after load
 procedure wbApiServerStop;                                     // main thread, on exit
+// UI-backed helpers, registered by xeMainForm after load (main thread).
+procedure wbApiServerSetAddFileHandler(const aHandler: TwbApiAddFileProc);
+procedure wbApiServerSetSaveAllHandler(const aHandler: TwbApiSaveAllProc);
 
 implementation
 
@@ -152,7 +163,9 @@ uses
   wbCommandLine;
 
 var
-  wbApiServerInstance : TwbApiServer;
+  wbApiServerInstance      : TwbApiServer;
+  wbApiServerAddFileHandler : TwbApiAddFileProc;
+  wbApiServerSaveAllHandler : TwbApiSaveAllProc;
 
 { =========================================================================== }
 {  helpers                                                                    }
@@ -642,6 +655,10 @@ begin
           HandlePluginRecords(aJob, f);
           Exit;
         end;
+        if (n = 3) and (parts[2] = 'save') then begin
+          HandleFileSave(aJob, f);
+          Exit;
+        end;
         if (n = 4) and (parts[2] = 'records') then begin
           var fid: Cardinal;
           if not wbApiParseFormID(parts[3], fid) then begin
@@ -717,6 +734,11 @@ begin
         Exit;
       end;
       HandleGlobalRecord(aJob, TwbFormID.FromCardinal(fid));
+      Exit;
+    end;
+
+    if (parts[0] = 'patch') and (n = 1) then begin
+      HandlePatch(aJob);
       Exit;
     end;
 
@@ -1424,6 +1446,228 @@ begin
   end;
 end;
 
+{ ---------------- M3b: save & patch handlers -------------------------------- }
+
+function TwbApiServer.FindRecordAnyFile(const aFormID: TwbFormID): IwbMainRecord;
+var
+  files : TwbFiles;
+  f     : IwbFile;
+  rec   : IwbMainRecord;
+  t     : IwbFile;
+  i, j, fc : Integer;
+begin
+  Result := nil;
+  if not Assigned(FFilesProvider) then
+    Exit;
+  files := Copy(FFilesProvider(), 0, MaxInt);
+  fc := Length(files);
+  for i := 1 to Pred(fc) do begin
+    t := files[i];
+    j := i;
+    while (j > 0) and (files[j-1].LoadOrder > t.LoadOrder) do begin
+      files[j] := files[j-1];
+      Dec(j);
+    end;
+    files[j] := t;
+  end;
+  for f in files do begin
+    rec := f.ContainedRecordByLoadOrderFormID[aFormID, True];
+    if rec <> nil then begin
+      Result := rec;
+      Exit;
+    end;
+  end;
+end;
+
+procedure TwbApiServer.HandleFileSave(aJob: TwbApiJob; const aFile: IwbFile);
+begin
+  if aJob.Request.Method <> 'POST' then begin
+    RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
+    Exit;
+  end;
+  if not Assigned(wbApiServerSaveAllHandler) then begin
+    RespondError(aJob, 501, 'not_available',
+      'Save handler is not registered (the API must run with the GUI)');
+    Exit;
+  end;
+  try
+    wbApiServerSaveAllHandler();
+  except
+    on E: Exception do begin
+      RespondError(aJob, 500, 'save_failed', E.Message);
+      Exit;
+    end;
+  end;
+  RespondJson(aJob, 200,
+    '{"ok":true,"message":"Dirty plugins were saved (same code path as the GUI Save button)"}');
+end;
+
+procedure TwbApiServer.HandlePatch(aJob: TwbApiJob);
+var
+  jo       : TJsonObject;
+  recs     : TJsonArray;
+  sb       : TStringBuilder;
+  newFile  : IwbFile;
+  rec      : IwbMainRecord;
+  res      : IwbElement;
+  fname    : string;
+  fidStr   : string;
+  fid      : Cardinal;
+  fileName : string;
+  err      : string;
+  isLight  : Boolean;
+  autoSave : Boolean;
+  doWinning: Boolean;
+  created, failed : Integer;
+  i        : Integer;
+begin
+  if aJob.Request.Method <> 'POST' then begin
+    RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
+    Exit;
+  end;
+  if not Assigned(wbApiServerAddFileHandler) then begin
+    RespondError(aJob, 501, 'not_available',
+      'New-file handler is not registered (the API must run with the GUI)');
+    Exit;
+  end;
+
+  jo := nil;
+  try
+    try
+      jo := TJsonObject(TJsonObject.Parse(aJob.Request.Body));
+    except
+      jo := nil;
+    end;
+    if jo = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Body is not valid JSON');
+      Exit;
+    end;
+
+    fileName := Trim(jo.S['fileName']);
+    if fileName = '' then begin
+      RespondError(aJob, 400, 'bad_request', 'Missing "fileName"');
+      Exit;
+    end;
+    if ExtractFileExt(fileName) = '' then
+      fileName := fileName + '.esp';
+
+    isLight  := False;
+    if jo.Contains('isLight') then
+      isLight := jo.B['isLight'];
+    autoSave := False;
+    if jo.Contains('autoSave') then
+      autoSave := jo.B['autoSave'];
+
+    recs := jo.A['records'];
+    if recs = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Missing "records" array');
+      Exit;
+    end;
+
+    newFile := wbApiServerAddFileHandler(fileName, isLight, False);
+    if newFile = nil then begin
+      RespondError(aJob, 400, 'create_failed', 'Could not create plugin file: ' + fileName);
+      Exit;
+    end;
+
+    created := 0;
+    failed  := 0;
+    sb := TStringBuilder.Create;
+    try
+      for i := 0 to Pred(recs.Count) do begin
+        err := '';
+        try
+          var o := recs.O[i];
+          fname := '';
+          if o.Contains('file') then
+            fname := o.S['file'];
+          fidStr := '';
+          if o.Contains('formID') then
+            fidStr := o.S['formID'];
+          if not wbApiParseFormID(fidStr, fid) then
+            err := 'invalid formID: ' + fidStr
+          else begin
+            if fname <> '' then begin
+              var files := Copy(FFilesProvider(), 0, MaxInt);
+              var srcFile: IwbFile := nil;
+              for var f2 in files do
+                if SameText(f2.FileName, fname) then begin
+                  srcFile := f2;
+                  Break;
+                end;
+              if srcFile = nil then
+                err := 'plugin not loaded: ' + fname
+              else
+                rec := srcFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+            end else
+              rec := FindRecordAnyFile(TwbFormID.FromCardinal(fid));
+
+            if err = '' then begin
+              if rec = nil then
+                err := 'record not found: ' + fidStr
+              else begin
+                doWinning := False;
+                if o.Contains('winning') then
+                  doWinning := o.B['winning'];
+                if doWinning then begin
+                  var master := rec.MasterOrSelf;
+                  var win := master.WinningOverride;
+                  if win <> nil then
+                    rec := win;
+                end;
+                res := rec.CopyInto(newFile, False, True, '', '', '', '');
+                if res = nil then
+                  err := 'copy failed for ' + fidStr;
+              end;
+            end;
+          end;
+        except
+          on E: Exception do
+            err := E.Message;
+        end;
+
+        if err <> '' then begin
+          Inc(failed);
+          sb.Append('{"formID":').Append(wbApiJsonString(fidStr))
+            .Append(',"ok":false,"error":').Append(wbApiJsonString(err)).Append('}');
+        end else begin
+          Inc(created);
+          if created > 1 then
+            sb.Append(',');
+          sb.Append('{"formID":').Append(wbApiJsonString(fidStr)).Append(',"ok":true}');
+        end;
+      end;
+
+      try
+        newFile.SortMasters;
+        newFile.CleanMasters;
+      except
+        on E: Exception do
+          sb.Append('{"formID":"","ok":false,"error":').Append(wbApiJsonString('masters: ' + E.Message)).Append('}');
+      end;
+
+      if autoSave and Assigned(wbApiServerSaveAllHandler) then
+        try
+          wbApiServerSaveAllHandler();
+        except
+          on E: Exception do
+            sb.Append('{"formID":"","ok":false,"error":').Append(wbApiJsonString('autosave: ' + E.Message)).Append('}');
+        end;
+
+      RespondJson(aJob, 200,
+        '{"ok":' + wbApiJsonBool(failed = 0) +
+        ',"fileName":' + wbApiJsonString(newFile.FileName) +
+        ',"created":' + IntToStr(created) +
+        ',"failed":' + IntToStr(failed) +
+        ',"results":[' + sb.ToString + ']}');
+    finally
+      sb.Free;
+    end;
+  finally
+    jo.Free;
+  end;
+end;
+
 { =========================================================================== }
 {  global entry points                                                        }
 { =========================================================================== }
@@ -1464,6 +1708,16 @@ procedure wbApiServerStop;
 begin
   if Assigned(wbApiServerInstance) then
     wbApiServerInstance.Stop;
+end;
+
+procedure wbApiServerSetAddFileHandler(const aHandler: TwbApiAddFileProc);
+begin
+  wbApiServerAddFileHandler := aHandler;
+end;
+
+procedure wbApiServerSetSaveAllHandler(const aHandler: TwbApiSaveAllProc);
+begin
+  wbApiServerSaveAllHandler := aHandler;
 end;
 
 initialization

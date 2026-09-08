@@ -77,8 +77,16 @@ def main():
 
     p = sub.add_parser("set"); p.add_argument("--port", type=int, default=7000); p.add_argument("--token", default="")
     p.add_argument("--file", required=True); p.add_argument("--record", required=True)
-    p.add_argument("--values", required=True,
-                   help='JSON object of path->value, e.g. \'{"DATA\\\\Weight":"12.5"}\'')
+    p.add_argument("--values", default="",
+                   help='JSON object of path->value, e.g. {"FULL - Name":"xxx"} (shell quoting is fragile; prefer --values-file)')
+    p.add_argument("--values-file", default="", help="path to a UTF-8 JSON file containing the path->value object")
+
+    p = sub.add_parser("save"); p.add_argument("--port", type=int, default=7000); p.add_argument("--token", default="")
+    p.add_argument("--file", required=True)
+
+    p = sub.add_parser("patch"); p.add_argument("--port", type=int, default=7000); p.add_argument("--token", default="")
+    p.add_argument("--patch-file", required=True,
+                   help='UTF-8 JSON file: {"fileName":"zz.esp","records":[{"formID":"00013740","file":"X.esp","winning":true}]}')
 
     args = ap.parse_args()
     token = getattr(args, "token", "")
@@ -125,8 +133,31 @@ def main():
                 f"/tree?depth={args.depth}")
         show(*request(args.port, path, token), summarize=True)
     elif args.cmd == "set":
+        if args.values_file:
+            with open(args.values_file, "r", encoding="utf-8") as fh:
+                vals_raw = fh.read()
+        else:
+            vals_raw = args.values
+        if not vals_raw.strip():
+            print("ERROR: provide --values or --values-file")
+            sys.exit(1)
+        try:
+            vals_obj = json.loads(vals_raw)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: --values is not valid JSON: {e}")
+            sys.exit(1)
+        if not isinstance(vals_obj, dict):
+            print("ERROR: --values must be a JSON object")
+            sys.exit(1)
         path = "/api/plugins/" + urllib.parse.quote(args.file) + "/records/" + args.record + "/values"
-        show(*request(args.port, path, token, method="POST", body=json.dumps({"values": json.loads(args.values)})))
+        show(*request(args.port, path, token, method="POST", body=json.dumps({"values": vals_obj})))
+    elif args.cmd == "save":
+        path = "/api/plugins/" + urllib.parse.quote(args.file) + "/save"
+        show(*request(args.port, path, token, method="POST", body="{}"))
+    elif args.cmd == "patch":
+        with open(args.patch_file, "r", encoding="utf-8") as fh:
+            body = fh.read()
+        show(*request(args.port, "/api/patch", token, method="POST", body=body))
     else:
         ap.print_help()
         sys.exit(1)
