@@ -78,6 +78,7 @@ uses
   Winapi.Windows,
 
   wbCommandLine,
+  wbApiServer,
   wbDefinitionsFNV,
   wbDefinitionsFNVSaves,
   wbDefinitionsFO3,
@@ -1620,6 +1621,9 @@ begin
   if FindCmdLineSwitch('exceptiontest') then try
     raise Exception.Create('Exception Test');
   except end;
+
+  // secondary development: parse -api / -apitoken command line switches
+  wbApiServerConfigureFromCmdLine;
 end;
 
 function xeDoInit: Boolean;

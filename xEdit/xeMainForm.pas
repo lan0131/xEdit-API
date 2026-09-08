@@ -1336,6 +1336,7 @@ uses
   wbLocalization,
   wbLOD,
   wbSort,
+  wbApiServer,
 
   xeDeveloperMessageForm,
   xeEditWarningForm,
@@ -20514,6 +20515,15 @@ var
 begin
   try
     wbLoaderDone := True;
+    if not wbLoaderError then begin
+      // secondary development: start the API server after plugins have loaded
+      wbApiServerStart(
+        function: TwbFiles
+        begin
+          Result := frmMain.Files;
+        end
+      );
+    end;
     wbStartTime := PDateTime(Message.WParam)^;
     LoadOrder := Message.LParam;
     if LoadOrder < 0 then begin

@@ -85,6 +85,7 @@ uses
   wbSaveInterface in 'Core\wbSaveInterface.pas',
   wbSort in 'Core\wbSort.pas',
   wbStreams in 'Core\wbStreams.pas',
+  wbApiServer in 'Core\wbApiServer.pas',
 
   xeInit in 'xEdit\xeInit.pas',
   xeDeveloperMessageForm in 'xEdit\xeDeveloperMessageForm.pas' {frmDeveloperMessage},
@@ -158,6 +159,7 @@ begin
     Application.CreateForm(TfrmMain, frmMain);
   Application.Run;
   finally
+    wbApiServerStop;   // secondary development: stop the API server
     DoRename;
   end;
 end.
