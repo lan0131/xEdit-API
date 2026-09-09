@@ -127,6 +127,12 @@ type
                                     const aName: string): IwbElement;
     procedure   HandleCopyElements(aJob: TwbApiJob; const aFile: IwbFile;
                                    const aFormID: TwbFormID);
+    procedure   HandleApiIndex(aJob: TwbApiJob);
+    function    FindPlugin(const aFileName: string): IwbFile;
+    procedure   HandleBatch(aJob: TwbApiJob);
+    function    ResolveElement(const aElement: IwbElement; const aPath: string;
+                               out aContainer: IwbContainerElementRef;
+                               out aIndex: Integer): IwbElement;
     procedure   HandleMergeEffects(aJob: TwbApiJob; const aFile: IwbFile;
                                    const aFormID: TwbFormID);
     procedure   HandlePatch(aJob: TwbApiJob);
@@ -607,6 +613,10 @@ begin
   end;
 
   p := aJob.Request.Path;
+  if p = '/api' then begin
+    HandleApiIndex(aJob);
+    Exit;
+  end;
   if not p.StartsWith('/api/') then begin
     RespondError(aJob, 404, 'not_found', 'Unknown endpoint: ' + aJob.Request.Path);
     Exit;
@@ -670,7 +680,7 @@ begin
           HandleAddMasters(aJob, f);
           Exit;
         end;
-        if (n = 4) and (parts[2] = 'records') then begin
+    if (n = 4) and (parts[2] = 'records') then begin
           var fid: Cardinal;
           if not wbApiParseFormID(parts[3], fid) then begin
             RespondError(aJob, 400, 'bad_formid', 'Invalid FormID: ' + parts[3]);
@@ -758,6 +768,11 @@ begin
 
     if (parts[0] = 'patch') and (n = 1) then begin
       HandlePatch(aJob);
+      Exit;
+    end;
+
+    if (parts[0] = 'batch') and (n = 1) then begin
+      HandleBatch(aJob);
       Exit;
     end;
 
@@ -1578,6 +1593,433 @@ begin
       '{"ok":' + wbApiJsonBool(failed = 0) +
       ',"added":' + IntToStr(added) +
       ',"failed":' + IntToStr(failed) + '}');
+  finally
+    jo.Free;
+  end;
+end;
+
+// Resolves a relative element path (backslash separated, segments may be
+// display names or numeric indexes) from a record/element. The last numeric
+// segment resolves to a child index. Returns nil when a path cannot resolve.
+function TwbApiServer.ResolveElement(const aElement: IwbElement; const aPath: string;
+                                     out aContainer: IwbContainerElementRef;
+                                     out aIndex: Integer): IwbElement;
+var
+  cur    : IwbElement;
+  tokens : TArray<string>;
+  t      : string;
+  k, n   : Integer;
+  cef    : IwbContainerElementRef;
+  el     : IwbElement;
+begin
+  Result := nil;
+  aContainer := nil;
+  aIndex := -1;
+  cur := aElement;
+  tokens := aPath.Split(['\'], TStringSplitOptions.ExcludeEmpty);
+  for k := 0 to High(tokens) do begin
+    t := Trim(tokens[k]);
+    if (k = 0) and SameText(t, 'RACE') then
+      Continue;                     // tolerate an optional leading "RACE" token
+    if t = '' then
+      Continue;
+    if not Supports(cur, IwbContainerElementRef, cef) then
+      Exit;                                   // cannot descend further
+    n := -1;
+    if (Length(t) <= 9) and (t[1] in ['0'..'9']) then
+      n := StrToIntDef(t, -1);
+    if n >= 0 then begin
+      if n < cef.ElementCount then begin
+        aContainer := cef;
+        aIndex := n;
+        cur := cef.Elements[n];
+      end else
+        Exit;
+    end else begin
+      aIndex := -1;
+      var found := False;
+      for var i := 0 to Pred(cef.ElementCount) do begin
+        el := cef.Elements[i];
+        if SameText(el.Name, t) then begin
+          aContainer := cef;
+          cur := el;
+          found := True;
+          Break;
+        end;
+      end;
+      if not found then
+        Exit;
+    end;
+  end;
+  Result := cur;
+end;
+
+// JSON convenience readers
+function WbApiJsonStr(const aObj: TJsonObject; const aName, aDef: string): string;
+begin
+  Result := aDef;
+  try
+    if aObj <> nil then
+      if aObj.Contains(aName) then
+        Result := aObj.S[aName];
+  except
+  end;
+end;
+
+function WbApiJsonObj(const aObj: TJsonObject; const aName: string): TJsonObject;
+begin
+  Result := nil;
+  try
+    if aObj <> nil then
+      if aObj.Contains(aName) then
+        Result := aObj.O[aName];
+  except
+  end;
+end;
+
+procedure TwbApiServer.HandleApiIndex(aJob: TwbApiJob);
+begin
+  RespondJson(aJob, 200,
+    '{"ok":true,' +
+    '"apiVersion":' + IntToStr(wbApiVersion) + ',' +
+    '"note":"FormIDs are 8-hex load-order FormIDs. Paths use display names joined by \\ ; numeric segments select list indexes.",' +
+    '"endpoints":[' +
+    '"GET  /api/status",' +
+    '"GET  /api/plugins",' +
+    '"GET  /api/plugins/{fileName}",' +
+    '"GET  /api/plugins/{fileName}/records?signature&editorID&offset&limit&names",' +
+    '"GET  /api/plugins/{fileName}/records/{formID}",' +
+    '"GET  /api/records/{formID}",' +
+    '"GET  /api/plugins/{fileName}/records/{formID}/tree?depth",' +
+    '"POST /api/plugins/{fileName}/records/{formID}/values",' +
+    '"POST /api/plugins/{fileName}/records/{formID}/copy-elements",' +
+    '"POST /api/plugins/{fileName}/records/{formID}/merge-effects",' +
+    '"POST /api/plugins/{fileName}/addmasters",' +
+    '"POST /api/plugins/{fileName}/save",' +
+    '"POST /api/patch",' +
+    '"POST /api/batch  (atomic op orchestrator: set/copy/add-item/remove-item/masters/save)",' +
+    '"GET  /api (this index)"' +
+    ']}');
+end;
+
+function TwbApiServer.FindPlugin(const aFileName: string): IwbFile;
+var
+  files : TwbFiles;
+  f     : IwbFile;
+begin
+  Result := nil;
+  if not Assigned(FFilesProvider) then
+    Exit;
+  files := FFilesProvider();
+  for f in files do
+    if SameText(f.FileName, aFileName) then begin
+      Result := f;
+      Exit;
+    end;
+end;
+
+procedure TwbApiServer.HandleBatch(aJob: TwbApiJob);
+var
+  jo, obj, src, values : TJsonObject;
+  ops      : TJsonArray;
+  sb       : TStringBuilder;
+  i, k, failedCount, changed : Integer;
+  strict   : Boolean;
+  opName   : string;
+  fn, fidS, path, vname, vval, msg, err : string;
+  fid      : Cardinal;
+  f, srcFile, tgtFile : IwbFile;
+  rec, srcRec, tgtRec : IwbMainRecord;
+  el, srcEl, tgtEl, newEl : IwbElement;
+  container, parentCef, listCef : IwbContainerElementRef;
+  idx      : Integer;
+  template : string;
+begin
+  if aJob.Request.Method <> 'POST' then begin
+    RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
+    Exit;
+  end;
+  jo := nil;
+  try
+    try
+      jo := TJsonObject(TJsonObject.Parse(aJob.Request.Body));
+    except
+      jo := nil;
+    end;
+    if jo = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Body is not valid JSON');
+      Exit;
+    end;
+    ops := jo.A['ops'];
+    if ops = nil then begin
+      RespondError(aJob, 400, 'bad_request', 'Missing "ops" array');
+      Exit;
+    end;
+    strict := False;
+    if jo.Contains('strict') then
+      strict := jo.B['strict'];
+
+    failedCount := 0;
+    sb := TStringBuilder.Create;
+    try
+      for i := 0 to Pred(ops.Count) do begin
+        obj := ops.O[i];
+        opName := WbApiJsonStr(obj, 'op', '');
+        err := '';
+        msg := '';
+
+        if opName = 'set' then begin
+          fn := WbApiJsonStr(obj, 'file', '');
+          fidS := WbApiJsonStr(obj, 'formID', '');
+          f := FindPlugin(fn);
+          if (f = nil) or not wbApiParseFormID(fidS, fid) then
+            err := 'bad file/formID'
+          else begin
+            rec := f.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+            if rec = nil then
+              err := 'record not found: ' + fidS
+            else if not rec.IsEditable then
+              err := 'record is read-only'
+            else begin
+              values := WbApiJsonObj(obj, 'values');
+              if values = nil then
+                err := 'missing values'
+              else begin
+                changed := 0;
+                for k := 0 to Pred(values.Count) do begin
+                  vname := values.Names[k];
+                  try
+                    vval := VarToStr(values[vname]);
+                  except
+                    vval := '';
+                  end;
+                  el := ResolveElement(rec, vname, container, idx);
+                  if el = nil then
+                    err := 'path not found: ' + vname
+                  else if not el.IsEditable then
+                    err := 'element not editable: ' + vname
+                  else begin
+                    try
+                      el.EditValue := vval;
+                      Inc(changed);
+                    except
+                      on E: Exception do
+                        err := E.Message;
+                    end;
+                  end;
+                  if err <> '' then
+                    Break;
+                end;
+                if err = '' then
+                  msg := 'changed ' + IntToStr(changed);
+              end;
+            end;
+          end;
+        end else if opName = 'copy' then begin
+          src := WbApiJsonObj(obj, 'source');
+          tgtFile := nil; srcFile := nil;
+          if src <> nil then begin
+            srcFile := FindPlugin(WbApiJsonStr(src, 'file', ''));
+            if srcFile <> nil then begin
+              fidS := WbApiJsonStr(src, 'formID', '');
+              if wbApiParseFormID(fidS, fid) then
+                srcRec := srcFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+            end;
+          end;
+          fn := WbApiJsonStr(obj, 'file', '');
+          fidS := WbApiJsonStr(obj, 'formID', '');
+          f := FindPlugin(fn);
+          if (f = nil) or not wbApiParseFormID(fidS, fid) then
+            err := 'bad file/formID'
+          else begin
+            tgtRec := f.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+            if (srcRec = nil) or (tgtRec = nil) then
+              err := 'could not resolve target/source record'
+            else begin
+              path := WbApiJsonStr(obj, 'path', '');
+              if path = '' then
+                err := 'missing path'
+              else begin
+                srcEl := ResolveElement(srcRec, path, container, idx);
+                tgtEl := ResolveElement(tgtRec, path, container, idx);
+                if srcEl = nil then
+                  err := 'source path not found: ' + path
+                else if tgtEl <> nil then begin
+                  try
+                    tgtEl.Assign(wbAssignThis, srcEl, False);
+                    msg := 'copied ' + path;
+                  except
+                    on E: Exception do
+                      err := E.Message;
+                  end;
+                end else begin
+                  // target missing: create the optional sub-record under its parent
+                  var tokens := path.Split(['\'], TStringSplitOptions.ExcludeEmpty);
+                  var parentPath := '';
+                  for k := 0 to High(tokens) - 1 do begin
+                    if k > 0 then
+                      parentPath := parentPath + '\';
+                    parentPath := parentPath + tokens[k];
+                  end;
+                  var lastToken := tokens[High(tokens)];
+                  var pe := ResolveElement(tgtRec, parentPath, parentCef, idx);
+                  if (pe = nil) or not Supports(pe, IwbContainerElementRef, listCef) then
+                    err := 'cannot create: parent not found for ' + path
+                  else begin
+                    try
+                      newEl := listCef.Add(lastToken);
+                      if newEl = nil then
+                        err := 'could not add ' + lastToken
+                      else begin
+                        newEl.Assign(wbAssignThis, srcEl, False);
+                        msg := 'created+copied ' + path;
+                      end;
+                    except
+                      on E: Exception do
+                        err := E.Message;
+                    end;
+                  end;
+                end;
+              end;
+            end;
+          end;
+        end else if opName = 'add-item' then begin
+          fn := WbApiJsonStr(obj, 'file', '');
+          fidS := WbApiJsonStr(obj, 'formID', '');
+          f := FindPlugin(fn);
+          if (f = nil) or not wbApiParseFormID(fidS, fid) then
+            err := 'bad file/formID'
+          else begin
+            rec := f.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+            path := WbApiJsonStr(obj, 'path', '');
+            if (rec = nil) then
+              err := 'record not found'
+            else if path = '' then
+              err := 'missing path (container)'
+            else begin
+              el := ResolveElement(rec, path, container, idx);
+              if (el = nil) or not Supports(el, IwbContainerElementRef, listCef) then
+                err := 'path is not a container: ' + path
+              else begin
+                template := WbApiJsonStr(obj, 'template', '');
+                if template = '' then
+                  if listCef.ElementCount > 0 then
+                    template := listCef.Elements[0].Name;
+                if template = '' then
+                  err := 'cannot infer item template for ' + path
+                else begin
+                  try
+                    newEl := listCef.Add(template);
+                    if newEl = nil then
+                      err := 'could not add item ' + template
+                    else begin
+                      msg := 'added ' + template + ' at index ' + IntToStr(Pred(listCef.ElementCount));
+                      src := WbApiJsonObj(obj, 'source');
+                      if src <> nil then begin
+                        srcFile := FindPlugin(WbApiJsonStr(src, 'file', ''));
+                        fidS := WbApiJsonStr(src, 'formID', '');
+                        if (srcFile <> nil) and wbApiParseFormID(fidS, fid) then begin
+                          srcRec := srcFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+                          if srcRec <> nil then begin
+                            srcEl := ResolveElement(srcRec, WbApiJsonStr(src, 'path', path), container, idx);
+                            if srcEl <> nil then
+                              newEl.Assign(wbAssignThis, srcEl, False);
+                          end;
+                        end;
+                      end;
+                    end;
+                  except
+                    on E: Exception do
+                      err := E.Message;
+                  end;
+                end;
+              end;
+            end;
+          end;
+        end else if opName = 'remove-item' then begin
+          fn := WbApiJsonStr(obj, 'file', '');
+          fidS := WbApiJsonStr(obj, 'formID', '');
+          path := WbApiJsonStr(obj, 'path', '');
+          f := FindPlugin(fn);
+          if (f = nil) or not wbApiParseFormID(fidS, fid) then
+            err := 'bad file/formID'
+          else begin
+            rec := f.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+            if rec = nil then
+              err := 'record not found'
+            else begin
+              el := ResolveElement(rec, path, container, idx);
+              if (el = nil) or (container = nil) or (idx < 0) then
+                err := 'path must end in a numeric list index: ' + path
+              else begin
+                try
+                  container.RemoveElement(idx);
+                  msg := 'removed ' + path;
+                except
+                  on E: Exception do
+                    err := E.Message;
+                end;
+              end;
+            end;
+          end;
+        end else if opName = 'masters' then begin
+          fn := WbApiJsonStr(obj, 'file', '');
+          f := FindPlugin(fn);
+          if f = nil then
+            err := 'plugin not loaded: ' + fn
+          else begin
+            var arr := jo.A['add'];
+            if arr <> nil then
+              for k := 0 to Pred(arr.Count) do begin
+                try
+                  var mname := arr.S[k];
+                  if not SameText(mname, f.FileName) then
+                    f.AddMasterIfMissing(mname);
+                except
+                end;
+              end;
+            if obj.Contains('sort') and obj.B['sort'] then
+              f.SortMasters;
+            if obj.Contains('clean') and obj.B['clean'] then
+              f.CleanMasters;
+            msg := 'masters updated';
+          end;
+        end else if opName = 'save' then begin
+          if not Assigned(wbApiServerSaveAllHandler) then
+            err := 'save handler not registered'
+          else begin
+            try
+              wbApiServerSaveAllHandler();
+              msg := 'saved (all dirty)';
+            except
+              on E: Exception do
+                err := E.Message;
+            end;
+          end;
+        end else
+          err := 'unknown op: ' + opName;
+
+        if i > 0 then
+          sb.Append(',');
+        if err = '' then
+          sb.Append('{"index":').Append(i).Append(',"op":').Append(wbApiJsonString(opName))
+            .Append(',"ok":true,"message":').Append(wbApiJsonString(msg)).Append('}')
+        else begin
+          Inc(failedCount);
+          sb.Append('{"index":').Append(i).Append(',"op":').Append(wbApiJsonString(opName))
+            .Append(',"ok":false,"error":').Append(wbApiJsonString(err)).Append('}');
+          if strict then
+            Break;
+        end;
+      end;
+
+      RespondJson(aJob, 200,
+        '{"ok":' + wbApiJsonBool(failedCount = 0) +
+        ',"failed":' + IntToStr(failedCount) +
+        ',"results":[' + sb.ToString + ']}');
+    finally
+      sb.Free;
+    end;
   finally
     jo.Free;
   end;
