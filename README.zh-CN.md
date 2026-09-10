@@ -67,6 +67,7 @@ GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。
 | `POST .../plugins/{file}/addmasters` | 按名补 master |
 | `POST .../plugins/{file}/save` | 保存 dirty 插件（GUI Save 路径，保存全部 dirty） |
 | `POST /api/patch` | 建补丁插件（`{"fileName","isLight","records":[...]}`） |
+| `GET /api/find?editorID&signature&file&exact&limit` | 跨插件按 EDID 查找（exact 优先用 EDID 索引，缺失时回退为按分组扫描；响应含 `edidIndexEnabled`） |
 | `POST /api/batch` | 通用原语编排器（见下） |
 
 ### `POST /api/batch` —— 通用原子操作编排
@@ -87,7 +88,7 @@ GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。
   ] }
 ```
 
-支持 op：`set`、`copy`、`add-item`、`remove-item`、`masters`、`save`。路径段支持名称或数字下标；`copy` 在目标缺失时会在父容器下自动补建可选子记录。
+支持 op：`set`、`copy`、`add-item`、`remove-item`、`create-record`、`masters`、`save`。路径段支持名称或数字下标；`copy` 在目标缺失时会在父容器下自动补建可选子记录；`create-record` 把源记录克隆为**全新记录**（新 FormID，可选 `editorID` 与 `values`），用于“生成内容”而非仅覆盖。
 
 ### 客户端示例（零依赖）
 
@@ -109,7 +110,7 @@ python api-client\xedit_api_client.py patch --patch-file patch.json
 - 修改在保存前仅内存态；不保存关闭即丢弃。
 - 超大数据记录深 `tree` 较慢——尽量用 `signature` 过滤或限制 `depth`。
 - batch `copy` 引用字段前需先通过 `masters` op 添加对应插件为 master（否则引用会被置空；先加 master 再复制）。
-- 规划：`create-record`（copy-as-new）、EDID 搜索、单文件保存报告、tree 紧凑模式。
+- 规划：单文件保存报告、tree 紧凑模式、undo/快照。
 
 ---
 

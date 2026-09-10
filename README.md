@@ -60,6 +60,7 @@ Conventions:
 | `GET /api/plugins/{file}/records?signature&editorID&offset&limit&names` | paged record list |
 | `GET /api/plugins/{file}/records/{formID}` | record metadata + full override chain |
 | `GET /api/records/{formID}` | resolve a record across the whole load order + chain |
+| `GET /api/find?editorID&signature&file&exact&limit` | find records by EditorID across loaded plugins (exact uses the EDID index when available, otherwise scans groups; the response reports `edidIndexEnabled`) |
 | `GET /api/plugins/{file}/records/{formID}/tree?depth` | element tree JSON (`name/path/value/children`, raw values exposed) |
 | `POST .../records/{formID}/values` | batch-edit fields: `{"values": {"FULL - Name": "..."}}` |
 | `POST .../records/{formID}/copy-elements` | copy top-level elements *or* arbitrary paths between records |
@@ -88,7 +89,7 @@ Body: `{"strict": true|false, "ops": [ { "op": "...", ... } ]}`. Ops run in orde
   ] }
 ```
 
-Supported ops: `set`, `copy`, `add-item`, `remove-item`, `masters`, `save`. Paths accept names or numeric indexes; `copy` creates a missing optional target automatically under its parent.
+Supported ops: `set`, `copy`, `add-item`, `remove-item`, `create-record`, `masters`, `save`. Paths accept names or numeric indexes; `copy` creates a missing optional target automatically under its parent. `create-record` clones a source record as a **new record** (new FormID, optional `editorID` and `values`), which is how patches add content instead of only overriding it.
 
 ### Client examples (zero-dependency)
 
@@ -110,7 +111,7 @@ python api-client\xedit_api_client.py patch --patch-file patch.json
 - Edits are in-memory until saved; closing without saving discards them.
 - Huge records make deep `tree` slow — filter with `signature`, or use bounded `depth`.
 - Batch `copy` of reference fields requires the referenced plugins to already be masters (add them with a `masters` op first, then re-copy).
-- Roadmap: `create-record` (copy-as-new), EDID search, per-file save report, compact tree mode.
+- Roadmap: per-file save report, compact tree mode, undo/snapshot support.
 
 ---
 

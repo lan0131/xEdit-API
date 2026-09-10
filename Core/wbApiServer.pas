@@ -128,6 +128,7 @@ type
     procedure   HandleCopyElements(aJob: TwbApiJob; const aFile: IwbFile;
                                    const aFormID: TwbFormID);
     procedure   HandleApiIndex(aJob: TwbApiJob);
+    procedure   HandleFind(aJob: TwbApiJob);
     function    FindPlugin(const aFileName: string): IwbFile;
     procedure   HandleBatch(aJob: TwbApiJob);
     function    ResolveElement(const aElement: IwbElement; const aPath: string;
@@ -350,6 +351,20 @@ begin
   for i := 0 to 3 do
     tmp[i + 1] := aSignature[i];
   Result := TrimRight(string(tmp));
+end;
+
+// inverse: build a 4-char TwbSignature from a string (padded with spaces)
+function wbApiStringToSignature(const aValue: string): TwbSignature;
+var
+  i, l : Integer;
+begin
+  for i := 0 to 3 do
+    Result[i] := ' ';
+  l := Length(aValue);
+  if l > 4 then
+    l := 4;
+  for i := 1 to l do
+    Result[i - 1] := AnsiChar(aValue[i]);
 end;
 
 // value of one query parameter ("name=value&..."), '' when absent
@@ -773,6 +788,11 @@ begin
 
     if (parts[0] = 'batch') and (n = 1) then begin
       HandleBatch(aJob);
+      Exit;
+    end;
+
+    if (parts[0] = 'find') and (aJob.Request.Method = 'GET') then begin
+      HandleFind(aJob);
       Exit;
     end;
 
@@ -1697,9 +1717,168 @@ begin
     '"POST /api/plugins/{fileName}/addmasters",' +
     '"POST /api/plugins/{fileName}/save",' +
     '"POST /api/patch",' +
-    '"POST /api/batch  (atomic op orchestrator: set/copy/add-item/remove-item/masters/save)",' +
+    '"GET  /api/find?editorID&signature&file&exact&limit",' +
+    '"POST /api/batch  (atomic ops: set/copy/add-item/remove-item/create-record/masters/save)",' +
     '"GET  /api (this index)"' +
     ']}');
+end;
+
+procedure TwbApiServer.HandleFind(aJob: TwbApiJob);
+var
+  q, edid, sig, fname, s : string;
+  exact, more : Boolean;
+  limit, count, i, j, k : Integer;
+  files : TwbFiles;
+  f, tf  : IwbFile;
+  rec, w : IwbMainRecord;
+  sb     : TStringBuilder;
+  cef    : IwbContainerElementRef;
+  grp    : IwbGroupRecord;
+  el     : IwbElement;
+
+  procedure AddRecord(const aRec: IwbMainRecord);
+  begin
+    if more or (aRec = nil) then
+      Exit;
+    if count > 0 then
+      sb.Append(',');
+    sb.Append('{"file":').Append(wbApiJsonString(aRec._File.FileName));
+    sb.Append(',"formID":').Append(wbApiJsonString(IntToHex(aRec.FormID.ToCardinal, 8)));
+    sb.Append(',"loadOrderFormID":').Append(wbApiJsonString(IntToHex(aRec.LoadOrderFormID.ToCardinal, 8)));
+    sb.Append(',"signature":').Append(wbApiJsonString(wbApiSignatureToString(aRec.Signature)));
+    sb.Append(',"editorID":').Append(wbApiJsonString(aRec.EditorID));
+    sb.Append(',"isMaster":').Append(wbApiJsonBool(aRec.IsMaster));
+    sb.Append(',"isWinningOverride":').Append(wbApiJsonBool(aRec.IsWinningOverride));
+    sb.Append(',"overrideCount":').Append(aRec.OverrideCount);
+    if aRec.IsMaster then
+      w := nil
+    else
+      w := aRec.WinningOverride;
+    if w <> nil then
+      sb.Append(',"winningFile":').Append(wbApiJsonString(w._File.FileName))
+    else
+      sb.Append(',"winningFile":').Append(wbApiJsonString(aRec._File.FileName));
+    sb.Append('}');
+    Inc(count);
+    if count >= limit then
+      more := True;
+  end;
+
+begin
+  if not Assigned(FFilesProvider) then begin
+    RespondError(aJob, 500, 'no_provider', 'Plugin list provider is not registered');
+    Exit;
+  end;
+
+  q := aJob.Request.Query;
+  edid := wbApiQueryParam(q, 'editorID');
+  if edid = '' then begin
+    RespondError(aJob, 400, 'bad_request', 'Missing editorID parameter');
+    Exit;
+  end;
+  sig := UpperCase(Trim(wbApiQueryParam(q, 'signature')));
+  fname := wbApiQueryParam(q, 'file');
+  s := wbApiQueryParam(q, 'exact');
+  exact := not ((s = '0') or SameText(s, 'false'));
+  limit := StrToIntDef(wbApiQueryParam(q, 'limit'), 100);
+  if limit < 1 then
+    limit := 1;
+  if limit > 500 then
+    limit := 500;
+
+  files := Copy(FFilesProvider(), 0, MaxInt);
+  for i := 1 to Pred(Length(files)) do begin
+    tf := files[i];
+    j := i;
+    while (j > 0) and (files[j-1].LoadOrder > tf.LoadOrder) do begin
+      files[j] := files[j-1];
+      Dec(j);
+    end;
+    files[j] := tf;
+  end;
+
+  count := 0;
+  more  := False;
+  sb := TStringBuilder.Create;
+  try
+    for f in files do begin
+      if more then
+        Break;
+      if (fname <> '') and not SameText(f.FileName, fname) then
+        Continue;
+
+      if exact then begin
+        rec := f.RecordByEditorID[edid];
+        if rec <> nil then
+          AddRecord(rec)
+        else if sig <> '' then begin
+          // no EDID index (SSEEdit not started with -TrackAllEditorID): scan the group
+          grp := f.GroupBySignature[wbApiStringToSignature(sig)];
+          if grp <> nil then
+            for i := 0 to Pred(grp.ElementCount) do begin
+              el := grp.Elements[i];
+              if Supports(el, IwbMainRecord, rec) then
+                if SameText(rec.EditorID, edid) then
+                  AddRecord(rec);
+              if more then
+                Break;
+            end;
+        end else if fname <> '' then begin
+          if Supports(f, IwbContainerElementRef, cef) then
+            for i := 0 to Pred(cef.ElementCount) do begin
+              el := cef.Elements[i];
+              if Supports(el, IwbGroupRecord, grp) then
+                for k := 0 to Pred(grp.ElementCount) do begin
+                  el := grp.Elements[k];
+                  if Supports(el, IwbMainRecord, rec) then
+                    if SameText(rec.EditorID, edid) then
+                      AddRecord(rec);
+                  if more then
+                    Break;
+                end;
+              if more then
+                Break;
+            end;
+        end;
+      end else begin
+        if sig <> '' then begin
+          grp := f.GroupBySignature[wbApiStringToSignature(sig)];
+          if grp <> nil then
+            for i := 0 to Pred(grp.ElementCount) do begin
+              el := grp.Elements[i];
+              if Supports(el, IwbMainRecord, rec) then
+                if StartsText(edid, rec.EditorID) then
+                  AddRecord(rec);
+              if more then
+                Break;
+            end;
+        end else if Supports(f, IwbContainerElementRef, cef) then begin
+          for i := 0 to Pred(cef.ElementCount) do begin
+            el := cef.Elements[i];
+            if Supports(el, IwbGroupRecord, grp) then
+              for k := 0 to Pred(grp.ElementCount) do begin
+                el := grp.Elements[k];
+                if Supports(el, IwbMainRecord, rec) then
+                  if StartsText(edid, rec.EditorID) then
+                    AddRecord(rec);
+                if more then
+                  Break;
+              end;
+            if more then
+              Break;
+          end;
+        end;
+      end;
+    end;
+
+    RespondJson(aJob, 200,
+      '{"ok":true,"count":' + IntToStr(count) +
+      ',"hasMore":' + wbApiJsonBool(more) +
+      ',"edidIndexEnabled":' + wbApiJsonBool(wbTrackAllEditorID) +
+      ',"matches":[' + sb.ToString + ']}');
+  finally
+    sb.Free;
+  end;
 end;
 
 function TwbApiServer.FindPlugin(const aFileName: string): IwbFile;
@@ -1730,6 +1909,7 @@ var
   fid      : Cardinal;
   f, srcFile, tgtFile : IwbFile;
   rec, srcRec, tgtRec : IwbMainRecord;
+  newRec   : IwbMainRecord;
   el, srcEl, tgtEl, newEl : IwbElement;
   container, parentCef, listCef : IwbContainerElementRef;
   idx      : Integer;
@@ -1960,6 +2140,72 @@ begin
                     err := E.Message;
                 end;
               end;
+            end;
+          end;
+        end else if opName = 'create-record' then begin
+          src := WbApiJsonObj(obj, 'source');
+          fn := WbApiJsonStr(obj, 'file', '');
+          f := FindPlugin(fn);
+          srcFile := nil;
+          srcRec := nil;
+          if src <> nil then begin
+            srcFile := FindPlugin(WbApiJsonStr(src, 'file', ''));
+            if srcFile <> nil then begin
+              fidS := WbApiJsonStr(src, 'formID', '');
+              if wbApiParseFormID(fidS, fid) then
+                srcRec := srcFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
+            end;
+          end;
+          if f = nil then
+            err := 'plugin not loaded: ' + fn
+          else if srcRec = nil then
+            err := 'source record not found'
+          else begin
+            try
+              newEl := srcRec.CopyInto(f, True, True, '', '', '', '');
+              if newEl = nil then
+                err := 'copy-as-new failed'
+              else if not Supports(newEl, IwbMainRecord, newRec) then
+                err := 'copy-as-new result is not a record'
+              else begin
+                var newED := WbApiJsonStr(obj, 'editorID', '');
+                if newED <> '' then
+                  if newRec.CanHaveEditorID then
+                    newRec.EditorID := newED
+                  else
+                    err := 'record type cannot have an editor ID';
+                if err = '' then begin
+                  values := WbApiJsonObj(obj, 'values');
+                  if values <> nil then
+                    for k := 0 to Pred(values.Count) do begin
+                      vname := values.Names[k];
+                      try
+                        vval := VarToStr(values[vname]);
+                      except
+                        vval := '';
+                      end;
+                      el := ResolveElement(newRec, vname, container, idx);
+                      if el = nil then begin
+                        err := 'path not found: ' + vname;
+                        Break;
+                      end else
+                        try
+                          el.EditValue := vval;
+                        except
+                          on E: Exception do begin
+                            err := E.Message;
+                            Break;
+                          end;
+                        end;
+                    end;
+                end;
+                if err = '' then
+                  msg := 'created ' + IntToHex(newRec.LoadOrderFormID.ToCardinal, 8) +
+                         ' edid=' + newRec.EditorID;
+              end;
+            except
+              on E: Exception do
+                err := E.Message;
             end;
           end;
         end else if opName = 'masters' then begin
