@@ -3,6 +3,8 @@
 > 目标仓库：`TES5Edit/TES5Edit`（xEdit 代码库），当前克隆分支 `dev-4.1.6`（HEAD `9fb0168`，2026-09-06）。
 > 目标形态：SSEEdit.exe（`-SSE` 模式 / 重命名 exe 均可）。
 > 状态：v0 设计稿，待用户确认选型后进入编码。
+> **保存策略（现行，覆盖下文所有历史描述）：API 不提供任何保存能力**——没有 save 端点、batch 没有 save op，
+> 所有落盘必须由用户在 xEdit 界面里确认执行。详见 §12。
 
 ---
 
@@ -160,7 +162,7 @@ xEdit 主窗口正常启动后加载插件，API 服务在“插件加载完成�
 | `GET /api/records/{loadOrderFormID}` | 跨插件解析：哪个文件、是否已加载、覆盖链摘要（无需先知道文件名） |
 | `POST /api/plugins/{fileName}/records/{loadOrderFormID}/values` | 批量改字段：`{"values": {"DATA\\Weight": "12.5", "EDID": "x"}}`（`\` 路径语义与脚本一致） |
 | `POST /api/patch` | 创建 patch 插件：`{"fileName": "...", "records": [{"formID": "...", "includeWinning": true}...]}` → 新建文件+复制记录+补 master，返回新文件名 |
-| `POST /api/plugins/{fileName}/save` | 保存（走 xEdit 备份路径）；`POST /api/plugins/{fileName}/cleanmasters`、`sortmasters` |
+| `POST /api/plugins/{fileName}/save` | ~~保存（走 xEdit 备份路径）~~ **已移除，见 §12**；`POST /api/plugins/{fileName}/cleanmasters`、`sortmasters` |
 | `GET /api/jobs/{jobId}` | 长任务状态/结果轮询 |
 | `POST /api/shutdown` | 安全退出（token 必需） |
 
@@ -265,27 +267,50 @@ python api-client\xedit_api_client.py --port 7000
 
 ## 11. M3 已落地并实测通过（写操作）
 
+> 注：本节记录 M3 当时的形态，其中的 `save` 端点已按 §12 移除；其余（tree/values/patch）仍有效。
+
 **新增端点（均已运行时验证）：**
 
 | 端点 | 说明 |
 |---|---|
 | `GET /api/plugins/{file}/records/{formid}/tree?depth=N` | 记录元素树 JSON（name/path/value/children，depth 默认 8、上限 20） |
 | `POST /api/plugins/{file}/records/{formid}/values` | 批量改字段：body `{"values": {"FULL - Name": "..."}}`，path 取 tree 输出的显示名路径（如 `FULL - Name`） |
-| `POST /api/plugins/{file}/save` | 落盘：复用 GUI 保存路径（frmMain 注册的 SaveAll 静默回调，保存全部 dirty 插件并走备份/原子改名逻辑） |
 | `POST /api/patch` | 建补丁插件：body `{"fileName":"x.esp","records":[{"formID":"..","file":"可选","winning":可选}]}` → `frmMain.AddNewFileName` 建文件 + 每个记录 `element.CopyInto(newFile,False,True,...)`（自动 Report/AddRequiredMasters）+ `SortMasters/CleanMasters` |
 
 **实现要点：**
 - 树/编辑的根记录遍历用**静态接口链**（IwbMainRecord 继承容器接口），避免根对象 Supports/QueryInterface 的坑；子节点探测优先 `IwbContainerElementRef`。
 - 复制补丁记录用 `IwbElement.CopyInto`（`wbImplementation.pas` 内部已做 required masters 扫描与添加）。
-- GUI 回调（新建文件/静默保存）由 `xeMainForm.WMUserLoaderDone` 注册到 `wbApiServer.pas`（`wbApiServerSetAddFileHandler` / `wbApiServerSetSaveAllHandler`），Core 层不直接依赖 frmMain。
+- GUI 回调（新建文件）由 `xeMainForm.WMUserLoaderDone` 注册到 `wbApiServer.pas`（`wbApiServerSetAddFileHandler`），Core 层不直接依赖 frmMain。
 
 **实测：** 改 RACE 的 `FULL - Name`（changed=1、GUI 变红）、保存落盘、`zz_api_patch.esp` 含 2 条记录覆盖，均通过。
 
 **已知限制/后续（M4 候选）：**
-- `save` 语义 = “保存全部 dirty”（对齐 GUI Save 按钮），非单文件；单文件精准报告待做。
 - `busy` 字段当前会把“正在处理当前请求”计为 busy，语义待修正。
 - 超大记录（巨大数组/网格）的 tree 会偏慢，可加紧凑模式。
 - 元素 path 目前是 xEdit 显示名路径；可加按 signature 短路径别名。
 - `merge-effects` 不是通用原语：body 硬编码 `base`/`scsi`/`ube` 三个记录引用（SCSI-UBE 场景专用），通用需求请用 `copy` / `add-item` 组合，后续可把它下沉为示例脚本。
+
+---
+
+## 12. M4 变更：从 API 中移除保存能力（现行策略）
+
+**决策：所有保存操作只能由用户在 xEdit 界面确认执行，API 不具备写盘能力。**
+
+移除内容（`Core\wbApiServer.pas`、`xEdit\xeMainForm.pas`）：
+
+| 位置 | 处理 |
+|---|---|
+| `POST /api/plugins/{fileName}/save` + `TwbApiServer.HandleFileSave` | 整段删除；路由不再匹配该路径（返回 404 `not_found`） |
+| batch 的 `save` op | 删除；命中时返回 `ok:false` + “save is not available through the API…”（不是静默忽略） |
+| `TwbApiSaveAllProc`、`wbApiServerSaveAllHandler`、`wbApiServerSetSaveAllHandler` | 全部删除 |
+| `xeMainForm.WMUserLoaderDone` 里的 `wbApiServerSetSaveAllHandler(frmMain.SaveChanged)` | 删除（不再注册保存回调） |
+| `POST /api/patch` 的 `autoSave` 字段与建完即存逻辑 | 删除 |
+| `GET /api` 索引 | 去掉 save 端点与 op，新增 `"savePolicy"` 字段说明该策略 |
+| `api-client/xedit_api_client.py` | 删除 `save` 子命令；`set` 成功后提示到 GUI 保存 |
+
+**为什么这样做：** 写盘涉及备份、master 清理、加载顺序与用户意图，属于不可由外部脚本替用户拍板的破坏性动作；API 只负责“在内存里把改动做对”，最后由用户在 GUI 里审阅并保存（也天然提供了可视化确认与一次撤销机会）。
+
+**影响：** 客户端脚本不再有“一步落盘”的收尾动作——调用方在改完后必须提示用户去 GUI 保存；未保存即退出，所有改动丢弃（与 GUI 行为一致）。
+
 
 

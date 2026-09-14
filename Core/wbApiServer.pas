@@ -18,10 +18,12 @@
     -apitoken:<tok>   require "Authorization: Bearer <tok>" for every call
                       except GET /api/status
 
-  M1 endpoints (read only):
-    GET /api/status
-    GET /api/plugins
-    GET /api/plugins/(fileName)
+  Saving: the API deliberately has NO save capability. Edits are applied in
+  memory only; persisting them to disk stays the user's decision and must be
+  done from the xEdit GUI (File > Save / Ctrl+S). There is no save endpoint
+  and no save op in the batch engine.
+
+  Endpoints: see GET /api for the live index.
 
   This Source Code Form is subject to the terms of the Mozilla Public License,
   v. 2.0. If a copy of the MPL was not distributed with this file, You can obtain
@@ -54,8 +56,6 @@ type
   // Creates a new plugin through the GUI (adds it to Files and the nav tree).
   TwbApiAddFileProc = reference to function(const aFileName: string;
                                             aIsLight, aIsMedium: Boolean): IwbFile;
-  // Silent-save of all dirty plugins (same path as the GUI Save button).
-  TwbApiSaveAllProc = reference to procedure;
 
   TwbApiRequest = record
     Method  : string;             // GET / POST / ...
@@ -121,7 +121,6 @@ type
                                  const aFormID: TwbFormID);
     procedure   HandleRecordValues(aJob: TwbApiJob; const aFile: IwbFile;
                                    const aFormID: TwbFormID);
-    procedure   HandleFileSave(aJob: TwbApiJob; const aFile: IwbFile);
     procedure   HandleAddMasters(aJob: TwbApiJob; const aFile: IwbFile);
     function    FindTopLevelElement(const aRecord: IwbMainRecord;
                                     const aName: string): IwbElement;
@@ -164,7 +163,6 @@ procedure wbApiServerStart(const aFilesProvider: TwbApiFilesProvider); // main t
 procedure wbApiServerStop;                                     // main thread, on exit
 // UI-backed helpers, registered by xeMainForm after load (main thread).
 procedure wbApiServerSetAddFileHandler(const aHandler: TwbApiAddFileProc);
-procedure wbApiServerSetSaveAllHandler(const aHandler: TwbApiSaveAllProc);
 
 implementation
 
@@ -179,7 +177,6 @@ uses
 var
   wbApiServerInstance      : TwbApiServer;
   wbApiServerAddFileHandler : TwbApiAddFileProc;
-  wbApiServerSaveAllHandler : TwbApiSaveAllProc;
 
 { =========================================================================== }
 {  helpers                                                                    }
@@ -685,10 +682,6 @@ begin
         end;
         if (n = 3) and (parts[2] = 'records') then begin
           HandlePluginRecords(aJob, f);
-          Exit;
-        end;
-        if (n = 3) and (parts[2] = 'save') then begin
-          HandleFileSave(aJob, f);
           Exit;
         end;
         if (n = 3) and (parts[2] = 'addmasters') then begin
@@ -1494,7 +1487,7 @@ begin
   end;
 end;
 
-{ ---------------- M3b: save & patch handlers -------------------------------- }
+{ ---------------- M3b: patch handler --------------------------------------- }
 
 function TwbApiServer.FindRecordAnyFile(const aFormID: TwbFormID): IwbMainRecord;
 var
@@ -1525,29 +1518,6 @@ begin
       Exit;
     end;
   end;
-end;
-
-procedure TwbApiServer.HandleFileSave(aJob: TwbApiJob; const aFile: IwbFile);
-begin
-  if aJob.Request.Method <> 'POST' then begin
-    RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
-    Exit;
-  end;
-  if not Assigned(wbApiServerSaveAllHandler) then begin
-    RespondError(aJob, 501, 'not_available',
-      'Save handler is not registered (the API must run with the GUI)');
-    Exit;
-  end;
-  try
-    wbApiServerSaveAllHandler();
-  except
-    on E: Exception do begin
-      RespondError(aJob, 500, 'save_failed', E.Message);
-      Exit;
-    end;
-  end;
-  RespondJson(aJob, 200,
-    '{"ok":true,"message":"Dirty plugins were saved (same code path as the GUI Save button)"}');
 end;
 
 procedure TwbApiServer.HandleAddMasters(aJob: TwbApiJob; const aFile: IwbFile);
@@ -1703,6 +1673,7 @@ begin
     '{"ok":true,' +
     '"apiVersion":' + IntToStr(wbApiVersion) + ',' +
     '"note":"FormIDs are 8-hex load-order FormIDs. Paths use display names joined by \\ ; numeric segments select list indexes.",' +
+    '"savePolicy":"not available by design: the API only edits in memory; the user must save from the xEdit GUI.",' +
     '"endpoints":[' +
     '"GET  /api/status",' +
     '"GET  /api/plugins",' +
@@ -1715,10 +1686,9 @@ begin
     '"POST /api/plugins/{fileName}/records/{formID}/copy-elements",' +
     '"POST /api/plugins/{fileName}/records/{formID}/merge-effects",' +
     '"POST /api/plugins/{fileName}/addmasters",' +
-    '"POST /api/plugins/{fileName}/save",' +
     '"POST /api/patch",' +
     '"GET  /api/find?editorID&signature&file&exact&limit",' +
-    '"POST /api/batch  (atomic ops: set/copy/add-item/remove-item/create-record/masters/save)",' +
+    '"POST /api/batch  (atomic ops: set/copy/add-item/remove-item/create-record/masters)",' +
     '"GET  /api (this index)"' +
     ']}');
 end;
@@ -2230,19 +2200,10 @@ begin
               f.CleanMasters;
             msg := 'masters updated';
           end;
-        end else if opName = 'save' then begin
-          if not Assigned(wbApiServerSaveAllHandler) then
-            err := 'save handler not registered'
-          else begin
-            try
-              wbApiServerSaveAllHandler();
-              msg := 'saved (all dirty)';
-            except
-              on E: Exception do
-                err := E.Message;
-            end;
-          end;
-        end else
+        end else if opName = 'save' then
+          // saving is intentionally not exposed through the API
+          err := 'save is not available through the API; apply the edits, then save from the xEdit GUI'
+        else
           err := 'unknown op: ' + opName;
 
         if i > 0 then
@@ -2639,7 +2600,6 @@ var
   fileName : string;
   err      : string;
   isLight  : Boolean;
-  autoSave : Boolean;
   doWinning: Boolean;
   created, failed : Integer;
   i        : Integer;
@@ -2677,9 +2637,6 @@ begin
     isLight  := False;
     if jo.Contains('isLight') then
       isLight := jo.B['isLight'];
-    autoSave := False;
-    if jo.Contains('autoSave') then
-      autoSave := jo.B['autoSave'];
 
     recs := jo.A['records'];
     if recs = nil then begin
@@ -2771,14 +2728,6 @@ begin
           sb.Append('{"formID":"","ok":false,"error":').Append(wbApiJsonString('masters: ' + E.Message)).Append('}');
       end;
 
-      if autoSave and Assigned(wbApiServerSaveAllHandler) then
-        try
-          wbApiServerSaveAllHandler();
-        except
-          on E: Exception do
-            sb.Append('{"formID":"","ok":false,"error":').Append(wbApiJsonString('autosave: ' + E.Message)).Append('}');
-        end;
-
       RespondJson(aJob, 200,
         '{"ok":' + wbApiJsonBool(failed = 0) +
         ',"fileName":' + wbApiJsonString(newFile.FileName) +
@@ -2838,11 +2787,6 @@ end;
 procedure wbApiServerSetAddFileHandler(const aHandler: TwbApiAddFileProc);
 begin
   wbApiServerAddFileHandler := aHandler;
-end;
-
-procedure wbApiServerSetSaveAllHandler(const aHandler: TwbApiSaveAllProc);
-begin
-  wbApiServerSaveAllHandler := aHandler;
 end;
 
 initialization

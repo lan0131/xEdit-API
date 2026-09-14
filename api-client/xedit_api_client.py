@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Smoke-test client for the xEdit (SSEEdit) HTTP/JSON API (M1/M2/M3).
+Smoke-test client for the xEdit (SSEEdit) HTTP/JSON API.
 
 Usage:
     status / plugins / plugin --file X
@@ -9,6 +9,10 @@ Usage:
     record --record 030008D2 [--file X]
     tree --file X --record 030008D2 [--depth 8]
     set  --file X --record 030008D2 --values '{"DATA\\Weight":"12.5"}'
+    patch --patch-file patch.json
+
+Edits are in memory only: the API has no save capability by design, so the
+user has to persist them from the xEdit GUI (File > Save / Ctrl+S).
 
 No third-party dependencies (urllib only).
 """
@@ -81,9 +85,6 @@ def main():
                    help='JSON object of path->value, e.g. {"FULL - Name":"xxx"} (shell quoting is fragile; prefer --values-file)')
     p.add_argument("--values-file", default="", help="path to a UTF-8 JSON file containing the path->value object")
 
-    p = sub.add_parser("save"); p.add_argument("--port", type=int, default=7000); p.add_argument("--token", default="")
-    p.add_argument("--file", required=True)
-
     p = sub.add_parser("patch"); p.add_argument("--port", type=int, default=7000); p.add_argument("--token", default="")
     p.add_argument("--patch-file", required=True,
                    help='UTF-8 JSON file: {"fileName":"zz.esp","records":[{"formID":"00013740","file":"X.esp","winning":true}]}')
@@ -150,10 +151,11 @@ def main():
             print("ERROR: --values must be a JSON object")
             sys.exit(1)
         path = "/api/plugins/" + urllib.parse.quote(args.file) + "/records/" + args.record + "/values"
-        show(*request(args.port, path, token, method="POST", body=json.dumps({"values": vals_obj})))
-    elif args.cmd == "save":
-        path = "/api/plugins/" + urllib.parse.quote(args.file) + "/save"
-        show(*request(args.port, path, token, method="POST", body="{}"))
+        st, data = request(args.port, path, token, method="POST", body=json.dumps({"values": vals_obj}))
+        show(st, data)
+        if st == 200:
+            print("note: edits are in memory only - save them from the xEdit GUI "
+                  "(the API has no save capability).")
     elif args.cmd == "patch":
         with open(args.patch_file, "r", encoding="utf-8") as fh:
             body = fh.read()

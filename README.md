@@ -13,13 +13,14 @@ A fork of **[TES5Edit/TES5Edit](https://github.com/TES5Edit/TES5Edit)** (the xEd
 - Localhost HTTP/1.1 + JSON API inside xEdit (`-api` switch).
 - Everything runs on the xEdit main thread through a job pump — results equal doing the same action in the GUI.
 - **Read**: plugins, load order, records, override chains, element trees (raw values included).
-- **Write**: set field values, copy elements between records, merge actor-effect lists, add/remove list items, master maintenance, create patch plugins, save to disk — and a **`POST /api/batch` orchestrator** that composes these into one atomic-ish, dry-run-able workflow.
+- **Write** (in memory only): set field values, copy elements between records, merge actor-effect lists, add/remove list items, master maintenance, create patch plugins — and a **`POST /api/batch` orchestrator** that composes these into one workflow.
+- **No saving, by design**: the API cannot write plugins to disk. Persisting edits stays the user's decision and is done from the xEdit GUI (File > Save / Ctrl+S).
 - **Self discovery**: `GET /api` returns the full endpoint index for agents.
 
 | New code | Purpose |
 |---|---|
 | `Core/wbApiServer.pas` | the whole server (sockets, main-thread pump, endpoints, generic path resolver, batch engine) |
-| `xEdit.dpr`, `xEdit\xeInit.pas`, `xEdit\xeMainForm.pas` | thin wiring + GUI-backed handlers (new file / save all) |
+| `xEdit.dpr`, `xEdit\xeInit.pas`, `xEdit\xeMainForm.pas` | thin wiring + GUI-backed handler (new-file creation) |
 | `api-client/xedit_api_client.py` | zero-dependency Python client |
 | `Tools/delphi13-compat/` | Delphi 13 build patches (re-apply after submodule updates) |
 | `API_SERVER_DESIGN.md`, `DEV_SETUP_M0.md` | Chinese design & build docs |
@@ -39,7 +40,7 @@ copy Build\xEdit.exe Build\SSEEdit.exe
 SSEEdit.exe -SSE -api:7000            :: optional: -apitoken:mysecret
 ```
 
-Load plugins through the GUI; the API becomes ready when `pluginsLoaded: true`.
+Load plugins through the GUI; the API becomes ready when `pluginsLoaded: true`. Any edit the API makes stays in memory — save from the GUI when you are happy with it.
 
 ---
 
@@ -66,13 +67,12 @@ Conventions:
 | `POST .../records/{formID}/copy-elements` | copy whole **top-level** elements by display name: `{"source":{"file","formID"},"elements":["DATA - DATA", ...]}` (for arbitrary paths use the batch `copy` op) |
 | `POST .../records/{formID}/merge-effects` | scenario-specific helper (SCSI/UBE race patching): body `{"base":{...},"scsi":{...},"ube":{...}}`, appends UBE-only Actor Effects missing from the target and refreshes `SPCT - Count` |
 | `POST .../plugins/{file}/addmasters` | add masters by name |
-| `POST .../plugins/{file}/save` | persist dirty plugins (GUI Save path; saves all dirty) |
 | `POST /api/patch` | create a patch plugin (`{"fileName","isLight","records":[...]}`) |
 | `POST /api/batch` | generic op orchestrator (below) |
 
 ### `POST /api/batch` — generic primitive orchestrator
 
-Body: `{"strict": true|false, "ops": [ { "op": "...", ... } ]}`. Ops run in order on the main thread; each result is reported per op. **Nothing is written to disk unless an op `save` is included** — without it the batch is an in-memory dry run that is discarded when xEdit exits without saving.
+Body: `{"strict": true|false, "ops": [ { "op": "...", ... } ]}`. Ops run in order on the main thread; each result is reported per op. **A batch only ever changes what is in memory** — nothing is written to disk. Review the result, then save from the xEdit GUI when it looks right (closing xEdit without saving discards everything).
 
 ```json
 { "strict": false,
@@ -84,12 +84,11 @@ Body: `{"strict": true|false, "ops": [ { "op": "...", ... } ]}`. Ops run in orde
     { "op": "add-item", "file": "MyMod.esp", "formID": "010008D2", "path": "Actor Effects" },
     { "op": "remove-item", "file": "MyMod.esp", "formID": "010008D2",
       "path": "Actor Effects\\2" },
-    { "op": "masters", "file": "MyMod.esp", "add": ["BaseMod.esm"], "sort": true },
-    { "op": "save" }
+    { "op": "masters", "file": "MyMod.esp", "add": ["BaseMod.esm"], "sort": true }
   ] }
 ```
 
-Supported ops: `set`, `copy`, `add-item`, `remove-item`, `create-record`, `masters`, `save`. Paths accept names or numeric indexes; `copy` creates a missing optional target automatically under its parent. `create-record` clones a source record as a **new record** (new FormID, optional `editorID` and `values`), which is how patches add content instead of only overriding it.
+Supported ops: `set`, `copy`, `add-item`, `remove-item`, `create-record`, `masters`. Paths accept names or numeric indexes; `copy` creates a missing optional target automatically under its parent. `create-record` clones a source record as a **new record** (new FormID, optional `editorID` and `values`), which is how patches add content instead of only overriding it. (An `op: "save"` is rejected — see the saving note above.)
 
 ### Client examples (zero-dependency)
 
@@ -99,20 +98,21 @@ python api-client\xedit_api_client.py plugins
 python api-client\xedit_api_client.py records --file "MyMod.esp" --signature RACE --names --limit 20
 python api-client\xedit_api_client.py tree --file "MyMod.esp" --record 010008D2 --depth 4
 python api-client\xedit_api_client.py set --file "MyMod.esp" --record 010008D2 --values-file values.json
-python api-client\xedit_api_client.py save --file "MyMod.esp"
 python api-client\xedit_api_client.py patch --patch-file patch.json
 ```
+
+Then persist the result from the xEdit GUI — there is no save call in the client either.
 
 ---
 
 ## 4. Known limitations / roadmap
 
-- `save` saves all dirty plugins (same as the GUI Save button); per-file save reporting is planned.
-- Edits are in-memory until saved; closing without saving discards them.
+- **The API has no save capability**: `/api/plugins/{file}/save` does not exist and the batch `save` op is rejected. Everything the API changes lives in memory only, so the user must save from the xEdit GUI; closing without saving discards all of it.
+- Edits are in-memory and are not journalled: there is no undo/snapshot beyond xEdit's own behaviour.
 - Huge records make deep `tree` slow — filter with `signature`, or use bounded `depth`.
 - Batch `copy` of reference fields requires the referenced plugins to already be masters (add them with a `masters` op first, then re-copy).
 - `merge-effects` is not a generic primitive — it hard-codes the three SCSI/UBE records for one specific race-patching scenario. Use `copy` / `add-item` for general list merging.
-- Roadmap: per-file save report, compact tree mode, undo/snapshot support.
+- Roadmap: compact tree mode, undo/snapshot support.
 
 ---
 
@@ -129,7 +129,7 @@ Sync upstream later: `git fetch upstream && git merge upstream/dev-4.1.6`, then 
 
 Code pointers:
 - `Core/wbApiServer.pas` = whole server. Add endpoints in `TwbApiServer.HandleRequest`; handlers run on the main thread and answer with `RespondJson`.
-- GUI-backed actions (new file / save-all) go through callbacks registered in `xeMainForm.WMUserLoaderDone`.
+- GUI-backed actions (new-file creation) go through a callback registered in `xeMainForm.WMUserLoaderDone`. The API deliberately registers **no** save callback, which is what keeps it incapable of writing plugins to disk.
 - Keep `wbInterface.pas` / `wbImplementation.pas` untouched to stay merge-friendly.
 
 Credits: upstream xEdit by ElminsterAU and contributors ([repo](https://github.com/TES5Edit/TES5Edit), MPL-2.0). This fork keeps the MPL-2.0 license and headers.

@@ -20529,12 +20529,8 @@ begin
           Result := frmMain.AddNewFileName(aFileName, aIsLight, aIsMedium);
         end
       );
-      wbApiServerSetSaveAllHandler(
-        procedure
-        begin
-          frmMain.SaveChanged(True, False);
-        end
-      );
+      // NOTE: the API intentionally gets no save callback - persisting edits
+      // is left to the user through the normal GUI Save path.
     end;
     wbStartTime := PDateTime(Message.WParam)^;
     LoadOrder := Message.LParam;

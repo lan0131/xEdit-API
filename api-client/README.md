@@ -1,6 +1,6 @@
 # xEdit API 客户端与冒烟测试
 
-针对 `Core\wbApiServer.pas` 提供的本地 HTTP/JSON API（读 + 写：`status` / `plugins` / `records` / `tree` / `set` / `save` / `patch`）。
+针对 `Core\wbApiServer.pas` 提供的本地 HTTP/JSON API（读 + 写：`status` / `plugins` / `records` / `tree` / `set` / `patch`；**不含保存**——保存请在 xEdit 界面操作）。
 
 ## 启动
 
@@ -25,10 +25,9 @@ python xedit_api_client.py records --file "MyMod.esp" --editorID armor --offset 
 python xedit_api_client.py record --record 030008D2                  # 全加载顺序解析 + 覆盖链
 python xedit_api_client.py record --record 030008D2 --file MyMod.esp # 限定在某插件内
 
-:: 写操作（不含 save 时仅改内存，退出不保存即丢弃）
+:: 写操作（全部仅改内存；API 没有保存能力，改完请在 xEdit 界面里保存）
 python xedit_api_client.py tree --file "MyMod.esp" --record 030008D2 --depth 4
 python xedit_api_client.py set  --file "MyMod.esp" --record 030008D2 --values-file values.json
-python xedit_api_client.py save --file "MyMod.esp"        # 注意：实际保存全部 dirty 插件
 python xedit_api_client.py patch --patch-file patch.json  # {"fileName":..,"records":[..]}
 ```
 
@@ -58,6 +57,7 @@ curl -s -H "Authorization: Bearer mysecret" http://127.0.0.1:7000/api/plugins
 - `editorID` 为不区分大小写的子串匹配。
 - 长耗时查询会短暂占用 xEdit 主线程（与 GUI 里做同样操作的行为一致）。
 - `/api/plugins/{file}/records/{formid}` 用 loadOrderFormID（8 hex）查该插件内实例。
-- 客户端目前只覆盖上述子命令；`/api`、`/api/find`、`copy-elements`、`merge-effects`、
+- 客户端目前只覆盖上述子命令（**没有 save**）；`/api`、`/api/find`、`copy-elements`、`merge-effects`、
   `addmasters`、`/api/batch` 请直接 curl（见仓库 `README.md` 的端点表）。
-- `save` 与 GUI 的 Save 等价：保存**全部** dirty 插件，不是只保存 `--file` 指定的那个。
+- **保存只能由用户在 xEdit 界面完成**：API 既没有 `/save` 端点，batch 的 `save` op 也会被拒绝；
+  所有修改仅存在于内存，不保存关闭即丢弃。

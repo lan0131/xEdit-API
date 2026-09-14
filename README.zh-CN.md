@@ -13,13 +13,14 @@
 - xEdit 进程内 localhost HTTP/1.1+JSON 服务（`-api` 开关）。
 - 全部操作在 xEdit **主线程任务泵**中执行，结果与在 GUI 里操作一致。
 - **读**：插件/加载顺序/记录/覆盖链/元素树（含原始值）。
-- **写**：改字段值、跨记录复制元素、Actor Effects 列表合并、列表项增删、master 维护、建补丁插件、落盘保存；以及 **`POST /api/batch`** 把这些原语编排成“近似原子、可 dry-run”的工作流。
+- **写**（仅内存）：改字段值、跨记录复制元素、Actor Effects 列表合并、列表项增删、master 维护、建补丁插件；以及 **`POST /api/batch`** 把这些原语编排成一条工作流。
+- **不提供保存，这是刻意的**：API 无法把插件写盘。落盘始终由用户决定，并在 xEdit 界面里完成（文件 > 保存 / Ctrl+S）。
 - **自发现**：`GET /api` 返回全部端点索引（agent 可直接探测）。
 
 | 新增代码 | 作用 |
 |---|---|
 | `Core/wbApiServer.pas` | 整个服务端：socket、主线程泵、端点、通用路径解析器、batch 引擎 |
-| `xEdit.dpr` / `xEdit\xeInit.pas` / `xEdit\xeMainForm.pas` | 薄接线 + GUI 回调（新建文件/保存全部） |
+| `xEdit.dpr` / `xEdit\xeInit.pas` / `xEdit\xeMainForm.pas` | 薄接线 + GUI 回调（新建文件） |
 | `api-client/xedit_api_client.py` | 零依赖 Python 客户端 |
 | `Tools/delphi13-compat/` | Delphi 13 构建补丁（submodule 更新后重放） |
 | `API_SERVER_DESIGN.md` / `DEV_SETUP_M0.md` | 中文设计/构建文档 |
@@ -39,7 +40,7 @@ copy Build\xEdit.exe Build\SSEEdit.exe
 SSEEdit.exe -SSE -api:7000            :: 可选：-apitoken:mysecret
 ```
 
-GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。
+GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。API 做的修改都只在内存里——确认无误后到界面里保存。
 
 ---
 
@@ -65,14 +66,13 @@ GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。
 | `POST .../records/{formID}/copy-elements` | 按显示名复制**顶层元素**：`{"source":{"file","formID"},"elements":["DATA - DATA", ...]}`（要按任意路径复制请用 batch 的 `copy` op） |
 | `POST .../records/{formID}/merge-effects` | 场景专用助手（SCSI/UBE 种族补丁）：body `{"base":{...},"scsi":{...},"ube":{...}}`，把目标缺失的 UBE 专有 Actor Effects 追加进去并刷新 `SPCT - Count` |
 | `POST .../plugins/{file}/addmasters` | 按名补 master |
-| `POST .../plugins/{file}/save` | 保存 dirty 插件（GUI Save 路径，保存全部 dirty） |
 | `POST /api/patch` | 建补丁插件（`{"fileName","isLight","records":[...]}`） |
 | `GET /api/find?editorID&signature&file&exact&limit` | 跨插件按 EDID 查找（exact 优先用 EDID 索引，缺失时回退为按分组扫描；响应含 `edidIndexEnabled`） |
 | `POST /api/batch` | 通用原语编排器（见下） |
 
 ### `POST /api/batch` —— 通用原子操作编排
 
-请求：`{"strict": bool, "ops":[{"op":"...", ...}]}`。op 依序在主线程执行，逐条返回结果。**不含 `save` op 就绝不落盘**——可作为内存 dry-run，退出不保存即丢弃。
+请求：`{"strict": bool, "ops":[{"op":"...", ...}]}`。op 依序在主线程执行，逐条返回结果。**batch 只改内存，绝不落盘**。看完结果确认无误后，再到 xEdit 界面里保存（不保存关闭即全部丢弃）。
 
 ```json
 { "strict": false,
@@ -83,12 +83,11 @@ GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。
       "source": { "file": "BaseMod.esm", "formID": "000008D2" }, "path": "DESC - Description" },
     { "op": "add-item", "file": "MyMod.esp", "formID": "010008D2", "path": "Actor Effects" },
     { "op": "remove-item", "file": "MyMod.esp", "formID": "010008D2", "path": "Actor Effects\\2" },
-    { "op": "masters", "file": "MyMod.esp", "add": ["BaseMod.esm"], "sort": true },
-    { "op": "save" }
+    { "op": "masters", "file": "MyMod.esp", "add": ["BaseMod.esm"], "sort": true }
   ] }
 ```
 
-支持 op：`set`、`copy`、`add-item`、`remove-item`、`create-record`、`masters`、`save`。路径段支持名称或数字下标；`copy` 在目标缺失时会在父容器下自动补建可选子记录；`create-record` 把源记录克隆为**全新记录**（新 FormID，可选 `editorID` 与 `values`），用于“生成内容”而非仅覆盖。
+支持 op：`set`、`copy`、`add-item`、`remove-item`、`create-record`、`masters`。路径段支持名称或数字下标；`copy` 在目标缺失时会在父容器下自动补建可选子记录；`create-record` 把源记录克隆为**全新记录**（新 FormID，可选 `editorID` 与 `values`），用于“生成内容”而非仅覆盖。（`op: "save"` 会被拒绝——见上面的保存说明。）
 
 ### 客户端示例（零依赖）
 
@@ -98,20 +97,21 @@ python api-client\xedit_api_client.py plugins
 python api-client\xedit_api_client.py records --file "MyMod.esp" --signature RACE --names --limit 20
 python api-client\xedit_api_client.py tree --file "MyMod.esp" --record 010008D2 --depth 4
 python api-client\xedit_api_client.py set --file "MyMod.esp" --record 010008D2 --values-file values.json
-python api-client\xedit_api_client.py save --file "MyMod.esp"
 python api-client\xedit_api_client.py patch --patch-file patch.json
 ```
+
+之后到 xEdit 界面里保存——客户端同样没有 save 子命令。
 
 ---
 
 ## 四、已知限制 / 规划
 
-- `save` = 保存全部 dirty（对齐 GUI Save）；单文件保存报告在规划中。
-- 修改在保存前仅内存态；不保存关闭即丢弃。
+- **API 不提供保存能力**：`/api/plugins/{file}/save` 端点不存在，batch 的 `save` op 会被拒绝。API 改的东西只在内存里，必须由用户在 xEdit 界面保存；不保存关闭即全部丢弃。
+- 修改仅内存态且无日志/快照（除 xEdit 自身行为外没有 undo）。
 - 超大数据记录深 `tree` 较慢——尽量用 `signature` 过滤或限制 `depth`。
 - batch `copy` 引用字段前需先通过 `masters` op 添加对应插件为 master（否则引用会被置空；先加 master 再复制）。
 - `merge-effects` **不是通用原语**：body 硬编码 SCSI/UBE 三个记录，只服务那一个种族补丁场景；通用列表合并请用 `copy` / `add-item`。
-- 规划：单文件保存报告、tree 紧凑模式、undo/快照。
+- 规划：tree 紧凑模式、undo/快照。
 
 ---
 
@@ -128,7 +128,7 @@ git push -u origin dev-4.1.6-api
 
 代码指引：
 - 服务端全部在 `Core/wbApiServer.pas`：`HandleRequest` 加路由、handler 在主线程跑、用 `RespondJson` 应答。
-- 依赖 GUI 的动作（新建文件/保存全部）走 `xeMainForm.WMUserLoaderDone` 注册的回调。
+- 依赖 GUI 的动作（新建文件）走 `xeMainForm.WMUserLoaderDone` 注册的回调。API **刻意不注册**保存回调——这正是它没有写盘能力的根本原因。
 - 尽量不动 `wbInterface.pas` / `wbImplementation.pas`，保持与上游易合并。
 
 致谢与许可：上游 xEdit 由 ElminsterAU 及贡献者维护（[仓库](https://github.com/TES5Edit/TES5Edit)，MPL-2.0）。本分支保留 MPL-2.0 许可与文件头。
