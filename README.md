@@ -28,7 +28,7 @@ A fork of **[TES5Edit/TES5Edit](https://github.com/TES5Edit/TES5Edit)** (the xEd
 
 ## 2. Build & run
 
-1. **Delphi 13 CE** installed (Community Edition; build inside the IDE).
+1. **Delphi 13 CE** installed (Community Edition; build inside the IDE). There is deliberately **no command-line build**: `dcc32`/`msbuild` refuse with *"This version of the product does not support command line compiling."*, and `msbuild` still **exits with code 0** while building nothing — never judge a build by its exit code.
 2. `git submodule update --init --recursive`
 3. `Tools\delphi13-compat\apply-patches.cmd`
 4. Open `xEdit.dproj` → Configuration **LiteDebug**, Platform **Win64** → `Project > Build`. (The "Error Reading Form: frmMain … VirtualEditTree" dialog on open is expected; click **Cancel**, never save from the form designer.)
@@ -63,8 +63,8 @@ Conventions:
 | `GET /api/find?editorID&signature&file&exact&limit` | find records by EditorID across loaded plugins (exact uses the EDID index when available, otherwise scans groups; the response reports `edidIndexEnabled`) |
 | `GET /api/plugins/{file}/records/{formID}/tree?depth` | element tree JSON (`name/path/value/children`, raw values exposed) |
 | `POST .../records/{formID}/values` | batch-edit fields: `{"values": {"FULL - Name": "..."}}` |
-| `POST .../records/{formID}/copy-elements` | copy top-level elements *or* arbitrary paths between records |
-| `POST .../records/{formID}/merge-effects` | merge Actor Effects lists (keep the override set plus extra entries) |
+| `POST .../records/{formID}/copy-elements` | copy whole **top-level** elements by display name: `{"source":{"file","formID"},"elements":["DATA - DATA", ...]}` (for arbitrary paths use the batch `copy` op) |
+| `POST .../records/{formID}/merge-effects` | scenario-specific helper (SCSI/UBE race patching): body `{"base":{...},"scsi":{...},"ube":{...}}`, appends UBE-only Actor Effects missing from the target and refreshes `SPCT - Count` |
 | `POST .../plugins/{file}/addmasters` | add masters by name |
 | `POST .../plugins/{file}/save` | persist dirty plugins (GUI Save path; saves all dirty) |
 | `POST /api/patch` | create a patch plugin (`{"fileName","isLight","records":[...]}`) |
@@ -111,6 +111,7 @@ python api-client\xedit_api_client.py patch --patch-file patch.json
 - Edits are in-memory until saved; closing without saving discards them.
 - Huge records make deep `tree` slow — filter with `signature`, or use bounded `depth`.
 - Batch `copy` of reference fields requires the referenced plugins to already be masters (add them with a `masters` op first, then re-copy).
+- `merge-effects` is not a generic primitive — it hard-codes the three SCSI/UBE records for one specific race-patching scenario. Use `copy` / `add-item` for general list merging.
 - Roadmap: per-file save report, compact tree mode, undo/snapshot support.
 
 ---

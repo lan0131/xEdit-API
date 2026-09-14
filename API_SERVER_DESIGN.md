@@ -223,8 +223,8 @@ xEdit 主窗口正常启动后加载插件，API 服务在“插件加载完成�
 ## 9. M1 已落地代码（本工作区，2026 快照 dev-4.1.6）
 
 > **状态：M0 完成 ✅ —— 已在 Delphi 13 CE (RAD Studio 37.0) 内编译成功**
-> `D:\Workspace\dsh\TES5Edit\Build\xEdit.exe`（LiteDebug/Win64，25.6 MB，仅警告无报错）。
-> Delphi 13 兼容补丁另存于 `D:\Workspace\dsh\delphi13-compat-patches\`（jcl inc、SynEdit VER370/2 处、JVCL 变量遮蔽），**子模块更新后需重放**。
+> `D:\Workspace\dsh\xEdit-API\TES5Edit\Build\xEdit.exe`（LiteDebug/Win64，约 26.9 MB，仅警告无报错）。
+> Delphi 13 兼容补丁的仓库内副本在 `Tools\delphi13-compat\`（另有一份备份于 `D:\Workspace\dsh\xEdit-API\delphi13-compat-patches\`；jcl inc、SynEdit VER370/2 处、JVCL 变量遮蔽），**子模块更新后需重放**。
 
 **新增：**
 - `Core\wbApiServer.pas` —— HTTP/1.1+JSON 服务：命令行走线、后台 accept 线程、主线程 TTimer 任务泵、token 校验、`/api/status`、`/api/plugins`、`/api/plugins/{fileName}`。
@@ -286,5 +286,6 @@ python api-client\xedit_api_client.py --port 7000
 - `busy` 字段当前会把“正在处理当前请求”计为 busy，语义待修正。
 - 超大记录（巨大数组/网格）的 tree 会偏慢，可加紧凑模式。
 - 元素 path 目前是 xEdit 显示名路径；可加按 signature 短路径别名。
+- `merge-effects` 不是通用原语：body 硬编码 `base`/`scsi`/`ube` 三个记录引用（SCSI-UBE 场景专用），通用需求请用 `copy` / `add-item` 组合，后续可把它下沉为示例脚本。
 
 

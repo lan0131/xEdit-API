@@ -28,7 +28,7 @@
 
 ## 二、构建与运行
 
-1. 安装 **Delphi 13 CE**（社区版需在 IDE 内编译）。
+1. 安装 **Delphi 13 CE**（**只能在 IDE 内编译**：`dcc32`/`msbuild` 会报 *“This version of the product does not support command line compiling.”*，且 `msbuild` 此时**退出码仍为 0** 却什么都没编——不要用退出码判断编译结果）。
 2. `git submodule update --init --recursive`
 3. `Tools\delphi13-compat\apply-patches.cmd`
 4. Delphi 打开 `xEdit.dproj` → **LiteDebug / Win64** → `Project > Build`。（打开时的 “Error Reading Form: frmMain … VirtualEditTree” 属预期，点 **Cancel**，勿在设计器保存。）
@@ -62,8 +62,8 @@ GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。
 | `GET /api/records/{formID}` | 跨加载顺序解析记录 + 覆盖链 |
 | `GET /api/plugins/{file}/records/{formID}/tree?depth` | 元素树 JSON（`name/path/value/children`，含原始值） |
 | `POST .../records/{formID}/values` | 批量改字段：`{"values":{"FULL - Name":"..."}}` |
-| `POST .../records/{formID}/copy-elements` | 在记录间复制顶层元素或**任意路径** |
-| `POST .../records/{formID}/merge-effects` | 合并 Actor Effects（覆盖组 + 追加额外项） |
+| `POST .../records/{formID}/copy-elements` | 按显示名复制**顶层元素**：`{"source":{"file","formID"},"elements":["DATA - DATA", ...]}`（要按任意路径复制请用 batch 的 `copy` op） |
+| `POST .../records/{formID}/merge-effects` | 场景专用助手（SCSI/UBE 种族补丁）：body `{"base":{...},"scsi":{...},"ube":{...}}`，把目标缺失的 UBE 专有 Actor Effects 追加进去并刷新 `SPCT - Count` |
 | `POST .../plugins/{file}/addmasters` | 按名补 master |
 | `POST .../plugins/{file}/save` | 保存 dirty 插件（GUI Save 路径，保存全部 dirty） |
 | `POST /api/patch` | 建补丁插件（`{"fileName","isLight","records":[...]}`） |
@@ -110,6 +110,7 @@ python api-client\xedit_api_client.py patch --patch-file patch.json
 - 修改在保存前仅内存态；不保存关闭即丢弃。
 - 超大数据记录深 `tree` 较慢——尽量用 `signature` 过滤或限制 `depth`。
 - batch `copy` 引用字段前需先通过 `masters` op 添加对应插件为 master（否则引用会被置空；先加 master 再复制）。
+- `merge-effects` **不是通用原语**：body 硬编码 SCSI/UBE 三个记录，只服务那一个种族补丁场景；通用列表合并请用 `copy` / `add-item`。
 - 规划：单文件保存报告、tree 紧凑模式、undo/快照。
 
 ---

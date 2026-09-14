@@ -1,6 +1,6 @@
 # M0 —— 本机搭建 xEdit(SSEEdit) 开发环境（必读）
 
-> 适用：Windows 10/11 64 位。目标：从 `D:\Workspace\dsh\TES5Edit` 编译出可运行的 **SSEEdit.exe**。
+> 适用：Windows 10/11 64 位。目标：从 `D:\Workspace\dsh\xEdit-API\TES5Edit` 编译出可运行的 **SSEEdit.exe**。
 > 分两步：**A 部分需要你本人操作（约 10–15 分钟，含注册）**；B 部分大部分可由我代劳/指导。
 
 ---
@@ -26,7 +26,7 @@ xEdit 是 Delphi/Pascal 写的，官方推荐 **Delphi 12 Community Edition**（
 在**普通终端**（不要在我这个受限会话里跑，会报 msys 管道错误）执行：
 
 ```bat
-cd /d D:\Workspace\dsh\TES5Edit
+cd /d D:\Workspace\dsh\xEdit-API\TES5Edit
 git submodule update --init --recursive
 ```
 
@@ -82,18 +82,21 @@ git submodule update --init --recursive
 1. **Community Edition 禁止命令行编译**。`dcc32.exe` 直接调用或 `msbuild xEdit.dproj` 都会报
    “This version of the product does not support command line compiling.” → **只能在 Delphi IDE 内按 Ctrl+Shift+F9 编译**。
    命令行只能做预处理/检查（子模块、inc 配置、diff 等）。
+   **注意 `msbuild` 此时退出码仍是 0（假成功），不要用退出码判断编译结果**；本仓库早期试过的 `build-xedit.cmd` 已删除，
+   不要再尝试命令行编译。
 2. 仓库官方目标是 **Delphi 12 (D29)**；本机装的是 Delphi 13（37.0）。IDE 首次打开 `.dproj` 会提示“由旧版本创建”，选择继续即可。
-3. **为 Delphi 13 应用的兼容补丁**（均已本地应用；另存于 `D:\Workspace\dsh\delphi13-compat-patches\`，**子模块更新后需重放**）：
+3. **为 Delphi 13 应用的兼容补丁**（均已本地应用；仓库内副本在 `Tools\delphi13-compat\`，另有一份备份在
+   `D:\Workspace\dsh\xEdit-API\delphi13-compat-patches\`，**子模块更新后需重放**）：
    - jcl：复制 `jcl.template.inc` → `jcld29win32.inc` 与 `jcld29win64.inc`（jcl.inc:440 要求）。
    - SynEdit `Source/SynEdit.inc`：新增 `VER370` 分支（映射 `SYN_COMPILER_29`）。
    - SynEdit `Source/SynHighlighterMulti.pas`：3 处 E2197（cast 实参作 var 形参）改临时变量。
    - JVCL `jvcl/run/JvExExtCtrls.pas`：`SplitterMouseDownFix` 局部变量改名（`Control/Pt/R/Size` → `lControl/lPt/lR/lSize`），
      避免与 `TSplitter.Control`（只读属性）遮蔽。
 4. 实测 IDE 内编译路径：
-   - 打开 `D:\Workspace\dsh\TES5Edit\xEdit.dproj`（不必打开整个 groupproj）；
+   - 打开 `D:\Workspace\dsh\xEdit-API\TES5Edit\xEdit.dproj`（不必打开整个 groupproj）；
    - 右上 Project Manager：Configuration = **LiteDebug**（默认），Platform = **Win64**（x64）；
    - 主菜单 Project → Build（Ctrl+Shift+F9）；
-   - 产物：`D:\Workspace\dsh\TES5Edit\Build\xEdit.exe`（改名为 `SSEEdit.exe` 或加 `-SSE` 即 SSEEdit）。
+   - 产物：`D:\Workspace\dsh\xEdit-API\TES5Edit\Build\xEdit.exe`（改名为 `SSEEdit.exe` 或加 `-SSE` 即 SSEEdit）。
    - 打开工程时的 “Error Reading Form frmMain” 弹窗：点 **Cancel**（设计期缺 VirtualTrees 包所致，不影响编译），
      不要在设计器里保存任何东西。
 5. DDevExtensions / Project Magician 对“只编译 xEdit.dproj 单个工程”**不是必需**（.dproj 自带全部 External 单元搜索路径）；
