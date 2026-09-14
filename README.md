@@ -103,6 +103,8 @@ python api-client\xedit_api_client.py patch --patch-file patch.json
 
 Then persist the result from the xEdit GUI — there is no save call in the client either.
 
+`api-client\verify_api.py` is a policy/regression check (read smoke test, proves the save endpoint and batch `save` op are gone, optional in-memory `--write-test`).
+
 ---
 
 ## 4. Known limitations / roadmap

@@ -102,6 +102,8 @@ python api-client\xedit_api_client.py patch --patch-file patch.json
 
 之后到 xEdit 界面里保存——客户端同样没有 save 子命令。
 
+`api-client\verify_api.py` 是策略/回归验证脚本（读链路冒烟，并确认 save 端点与 batch `save` op 确实已移除；可选 `--write-test` 做内存往返编辑）。
+
 ---
 
 ## 四、已知限制 / 规划

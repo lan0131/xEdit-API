@@ -33,6 +33,33 @@ python xedit_api_client.py patch --patch-file patch.json  # {"fileName":..,"reco
 
 带 token 时给每个子命令加 `--token mysecret`。
 
+## 策略/回归验证脚本
+
+`verify_api.py` 用来在编译出新 exe 后确认"API 无保存能力"这一策略真的生效，并顺带冒烟：
+
+```powershell
+python verify_api.py                                   # 默认端口 7000
+python verify_api.py --port 7000 --token mysecret
+python verify_api.py --write-test                      # 额外做一次"改字段→读回→改回"的往返（仅内存，净变化为零）
+python verify_api.py --patch-test --data-dir "F:\Skyrim SCSIM\Game\Data"   # 验证 /api/patch 的 autoSave 已失效
+```
+
+检查项：
+
+| 检查 | 期望 |
+|---|---|
+| `GET /api` | 索引里**没有** save 端点，batch op 列表**没有** `save`，且带 `savePolicy` 字段 |
+| `POST /api/plugins/{file}/save` | 404 `not_found`（端点已删除）；若返回 200 说明跑的是**旧 exe** |
+| `POST /api/batch` 且 `op="save"` | HTTP 200 但 `ok:false`，错误信息说明"保存不可用，请到 GUI 保存" |
+| `api-client` 源码 | 不再有 `save` 子命令 |
+| 读链路 | plugins / plugin / records / tree / find 均正常（证明 exe 本身健康） |
+| `--write-test` | 改 `FULL - Name` → 读回确认变化 → 改回原值（净变化为零，不落盘） |
+| `--patch-test` | `/api/patch` 带 `autoSave:true` 后**磁盘上没有新文件**（需 `--data-dir`） |
+
+退出码 0 = 全部通过；有 FAIL 时脚本会提示"运行中的 exe 与源码不一致，请重新编译并替换 exe"。
+
+> `--patch-test` 会在当前会话里新建一个**临时内存插件**（`zz_api_policy_probe_*.esp`）：之后**不要在 GUI 里保存**，退出不保存它就会消失。另外 `/api/patch` 在目标文件名已存在时会弹模态对话框卡住 API，所以脚本用随机名并会先检查磁盘。
+
 ## 直接 curl
 
 ```bash
