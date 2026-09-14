@@ -133,8 +133,6 @@ type
     function    ResolveElement(const aElement: IwbElement; const aPath: string;
                                out aContainer: IwbContainerElementRef;
                                out aIndex: Integer): IwbElement;
-    procedure   HandleMergeEffects(aJob: TwbApiJob; const aFile: IwbFile;
-                                   const aFormID: TwbFormID);
     procedure   HandlePatch(aJob: TwbApiJob);
     function    RecordsPageJson(aFile: IwbFile; const aSignature, aEditorID: string;
                                aOffset, aLimit: Integer; aWithNames: Boolean;
@@ -731,10 +729,6 @@ begin
           end;
           if parts[4] = 'copy-elements' then begin
             HandleCopyElements(aJob, f, TwbFormID.FromCardinal(fid));
-            Exit;
-          end;
-          if parts[4] = 'merge-effects' then begin
-            HandleMergeEffects(aJob, f, TwbFormID.FromCardinal(fid));
             Exit;
           end;
           RespondError(aJob, 404, 'not_found', 'Unknown endpoint: ' + aJob.Request.Path);
@@ -1718,7 +1712,6 @@ begin
     '"GET  /api/plugins/{fileName}/records/{formID}/tree?depth",' +
     '"POST /api/plugins/{fileName}/records/{formID}/values",' +
     '"POST /api/plugins/{fileName}/records/{formID}/copy-elements",' +
-    '"POST /api/plugins/{fileName}/records/{formID}/merge-effects",' +
     '"POST /api/plugins/{fileName}/addmasters",' +
     '"POST /api/patch",' +
     '"GET  /api/find?editorID&signature&file&exact&limit",' +
@@ -2414,206 +2407,6 @@ begin
         ',"results":[' + sb.ToString + ']}');
     finally
       sb.Free;
-    end;
-  finally
-    jo.Free;
-  end;
-end;
-
-// Helper: normalized identity of an actor-effect (SPLO) element, e.g. "SPEL:000AA022".
-function WbApiSpellKey(const aElement: IwbElement): string;
-var
-  v, s : string;
-  p, q : Integer;
-begin
-  Result := '';
-  try
-    v := aElement.Value;
-  except
-    v := '';
-  end;
-  p := Pos('[SPEL:', v);
-  if p > 0 then begin
-    s := Copy(v, p + 6, MaxInt);
-    q := Pos(']', s);
-    if q > 0 then begin
-      Result := Trim(Copy(s, 1, q - 1));
-      Exit;
-    end;
-  end;
-  if Result = '' then
-    Result := aElement.Name;   // fall back to display name
-end;
-
-procedure TwbApiServer.HandleMergeEffects(aJob: TwbApiJob; const aFile: IwbFile;
-                                          const aFormID: TwbFormID);
-var
-  jo, jo2    : TJsonObject;
-  tgtRec, baseRec, scsiRec, ubeRec : IwbMainRecord;
-  baseFile, scsiFile, ubeFile : IwbFile;
-  files      : TwbFiles;
-  tgtAct, baseAct, scsiAct, ubeAct : IwbContainerElementRef;
-  baseKeys, ubeKeys : TStringList;
-  i, j, appended, failed, tgtCount : Integer;
-  srcEl, newEl : IwbElement;
-  key        : string;
-  err        : string;
-  spctEl     : IwbElement;
-begin
-  if aJob.Request.Method <> 'POST' then begin
-    RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
-    Exit;
-  end;
-  jo := nil;
-  try
-    try
-      jo := TJsonObject(TJsonObject.Parse(aJob.Request.Body));
-    except
-      jo := nil;
-    end;
-    if jo = nil then begin
-      RespondError(aJob, 400, 'bad_request', 'Body is not valid JSON');
-      Exit;
-    end;
-
-    tgtRec := aFile.ContainedRecordByLoadOrderFormID[aFormID, True];
-    if tgtRec = nil then begin
-      RespondError(aJob, 404, 'not_found',
-        'Target record not found: ' + IntToHex(aFormID.ToCardinal, 8));
-      Exit;
-    end;
-
-    files := Copy(FFilesProvider(), 0, MaxInt);
-
-    // resolve the three reference records
-    baseRec := nil; scsiRec := nil; ubeRec := nil;
-    jo2 := jo.O['base']; if jo2 <> nil then begin
-      for var f2 in files do
-        if SameText(f2.FileName, jo2.S['file']) then begin
-          baseFile := f2;
-          Break;
-        end;
-      if baseFile <> nil then begin
-        var fid: Cardinal;
-        if wbApiParseFormID(jo2.S['formID'], fid) then
-          baseRec := baseFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
-      end;
-    end;
-    jo2 := jo.O['scsi']; if jo2 <> nil then begin
-      baseFile := nil;
-      for var f2 in files do
-        if SameText(f2.FileName, jo2.S['file']) then begin
-          scsiFile := f2;
-          Break;
-        end;
-      if scsiFile <> nil then begin
-        var fid: Cardinal;
-        if wbApiParseFormID(jo2.S['formID'], fid) then
-          scsiRec := scsiFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
-      end;
-    end;
-    jo2 := jo.O['ube']; if jo2 <> nil then begin
-      baseFile := nil;
-      for var f2 in files do
-        if SameText(f2.FileName, jo2.S['file']) then begin
-          ubeFile := f2;
-          Break;
-        end;
-      if ubeFile <> nil then begin
-        var fid: Cardinal;
-        if wbApiParseFormID(jo2.S['formID'], fid) then
-          ubeRec := ubeFile.ContainedRecordByLoadOrderFormID[TwbFormID.FromCardinal(fid), True];
-      end;
-    end;
-
-    if (baseRec = nil) or (scsiRec = nil) or (ubeRec = nil) then begin
-      RespondError(aJob, 400, 'bad_request', 'Could not resolve base/scsi/ube records');
-      Exit;
-    end;
-
-    if not (Supports(FindTopLevelElement(tgtRec, 'Actor Effects'), IwbContainerElementRef, tgtAct)) then begin
-      RespondError(aJob, 400, 'bad_request', 'Target record has no Actor Effects list');
-      Exit;
-    end;
-    Supports(FindTopLevelElement(baseRec, 'Actor Effects'), IwbContainerElementRef, baseAct);
-    Supports(FindTopLevelElement(scsiRec, 'Actor Effects'), IwbContainerElementRef, scsiAct);
-    Supports(FindTopLevelElement(ubeRec, 'Actor Effects'), IwbContainerElementRef, ubeAct);
-
-    baseKeys := TStringList.Create;
-    ubeKeys  := TStringList.Create;
-    try
-      baseKeys.Sorted := True;
-      baseKeys.Duplicates := dupIgnore;
-      ubeKeys.Sorted := True;
-      ubeKeys.Duplicates := dupIgnore;
-
-      if baseAct <> nil then
-        for i := 0 to Pred(baseAct.ElementCount) do
-          baseKeys.Add(WbApiSpellKey(baseAct.Elements[i]));
-      if ubeAct <> nil then
-        for i := 0 to Pred(ubeAct.ElementCount) do
-          ubeKeys.Add(WbApiSpellKey(ubeAct.Elements[i]));
-
-      appended := 0;
-      failed   := 0;
-      if ubeAct <> nil then
-        for i := 0 to Pred(ubeAct.ElementCount) do begin
-          srcEl := ubeAct.Elements[i];
-          key := WbApiSpellKey(srcEl);
-          // append only UBE-specific effects: not part of the base spell set and
-          // not already present on the target (which holds the SCSI list)
-          if baseKeys.IndexOf(key) >= 0 then
-            Continue;
-          if key = srcEl.Name then begin
-            // unparsed identity; only skip if identical name already exists
-          end;
-          // check target membership
-          var already := False;
-          for j := 0 to Pred(tgtAct.ElementCount) do
-            if SameText(WbApiSpellKey(tgtAct.Elements[j]), key) then begin
-              already := True;
-              Break;
-            end;
-          if already then
-            Continue;
-          err := '';
-          try
-            newEl := tgtAct.Add('SPLO - Actor Effect');
-            if newEl = nil then
-              err := 'could not add SPLO element'
-            else begin
-              newEl.Assign(wbAssignThis, srcEl, False);
-              Inc(appended);
-            end;
-          except
-            on E: Exception do
-              err := E.Message;
-          end;
-          if err <> '' then
-            Inc(failed);
-        end;
-
-      // refresh the SPCT count if a separate count element exists
-      if appended > 0 then begin
-        spctEl := FindTopLevelElement(tgtRec, 'SPCT - Count');
-        if spctEl <> nil then begin
-          tgtCount := 0;
-          if tgtAct <> nil then
-            tgtCount := tgtAct.ElementCount;
-          try
-            spctEl.EditValue := IntToStr(tgtCount);
-          except
-          end;
-        end;
-      end;
-
-      RespondJson(aJob, 200,
-        '{"ok":' + wbApiJsonBool(failed = 0) +
-        ',"appended":' + IntToStr(appended) +
-        ',"failed":' + IntToStr(failed) + '}');
-    finally
-      baseKeys.Free;
-      ubeKeys.Free;
     end;
   finally
     jo.Free;

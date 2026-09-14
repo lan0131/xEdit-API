@@ -11,8 +11,9 @@ What it proves (always run):
   3. static                         - api-client has no "save" subcommand
   4. POST /api/plugins/{f}/save     - 404 not_found (endpoint really is gone)
   5. POST /api/batch  op="save"     - HTTP 200 but ok=false + explanatory error
-  6. read smoke                     - plugins / records / tree / find still work
-  7. write smoke (in memory)        - values round-trip: set then restore, so the
+  6. POST .../merge-effects         - 404 not_found (no scenario-specific endpoint left)
+  7. read smoke                     - plugins / records / tree / find still work
+  8. write smoke (in memory)        - values round-trip: set then restore, so the
                                       net change is zero and nothing gets saved
 
 Opt-in extras:
@@ -145,6 +146,10 @@ def check_index(port, token):
     record(PASS if ok else FAIL, "index: savePolicy present",
            policy if policy else "missing 'savePolicy' field")
 
+    scen = [e for e in eps if "merge-effects" in e]
+    record(PASS if not scen else FAIL, "index: no scenario-specific endpoint listed",
+           f"endpoints={len(eps)}" + (f" | still listed: {scen}" if scen else ""))
+
 
 def check_client_source():
     try:
@@ -195,6 +200,29 @@ def check_batch_save_op(port, token):
           and "not available" in err.lower() and "save" in err.lower())
     record(PASS if ok else FAIL, "batch op 'save' rejected",
            err or f"unexpected result: {json.dumps(res)[:200]}")
+
+
+def check_scenario_endpoints_gone(port, token, plugin):
+    """Scenario-specific endpoints must be gone: only generic primitives remain."""
+    if not plugin:
+        record(SKIP, "POST .../merge-effects is gone", "no loaded plugin to address")
+        return
+    path = ("/api/plugins/" + urllib.parse.quote(plugin)
+            + "/records/00000000/merge-effects")
+    code, data, raw = call(port, path, token, method="POST", body="{}")
+    err = (data or {}).get("error") or {}
+    msg = err.get("message", "")
+    if code == 404 and err.get("code") == "not_found" and "Unknown endpoint" in msg:
+        record(PASS, "POST .../merge-effects is gone", f"HTTP 404 {err.get('code')}")
+    elif code == 404:
+        record(FAIL, ".../merge-effects is gone",
+               f"still routed (answered 404 '{msg}' for a bogus record instead of "
+               f"'Unknown endpoint') - rebuild the exe")
+    elif code == 200:
+        record(FAIL, ".../merge-effects is gone",
+               "the scenario-specific endpoint still exists - rebuild the exe")
+    else:
+        record(FAIL, ".../merge-effects is gone", f"HTTP {code} {raw[:160]}")
 
 
 def check_read_smoke(port, token, plugins):
@@ -408,6 +436,8 @@ def main():
 
     check_save_endpoint(args.port, args.token, plugins[0].get("fileName") if plugins else None)
     check_batch_save_op(args.port, args.token)
+    check_scenario_endpoints_gone(args.port, args.token,
+                                  plugins[0].get("fileName") if plugins else None)
 
     sample = check_read_smoke(args.port, args.token, plugins)
     if args.write_test:

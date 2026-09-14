@@ -13,7 +13,7 @@
 - xEdit 进程内 localhost HTTP/1.1+JSON 服务（`-api` 开关）。
 - 全部操作在 xEdit **主线程任务泵**中执行，结果与在 GUI 里操作一致。
 - **读**：插件/加载顺序/记录/覆盖链/元素树（含原始值）。
-- **写**（仅内存）：改字段值、跨记录复制元素、Actor Effects 列表合并、列表项增删、master 维护、建补丁插件；以及 **`POST /api/batch`** 把这些原语编排成一条工作流。
+- **写**（仅内存）：改字段值、跨记录复制元素、列表项增删、master 维护、建补丁插件；以及 **`POST /api/batch`** 把这些原语编排成一条工作流。
 - **不提供保存，这是刻意的**：API 无法把插件写盘。落盘始终由用户决定，并在 xEdit 界面里完成（文件 > 保存 / Ctrl+S）。
 - **自发现**：`GET /api` 返回全部端点索引（agent 可直接探测）。
 
@@ -64,7 +64,6 @@ GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。API 做的修�
 | `GET /api/plugins/{file}/records/{formID}/tree?depth` | 元素树 JSON（`name/path/value/children`，含原始值） |
 | `POST .../records/{formID}/values` | 批量改字段：`{"values":{"FULL - Name":"..."}}` |
 | `POST .../records/{formID}/copy-elements` | 按显示名复制**顶层元素**：`{"source":{"file","formID"},"elements":["DATA - DATA", ...]}`（要按任意路径复制请用 batch 的 `copy` op） |
-| `POST .../records/{formID}/merge-effects` | 场景专用助手（SCSI/UBE 种族补丁）：body `{"base":{...},"scsi":{...},"ube":{...}}`，把目标缺失的 UBE 专有 Actor Effects 追加进去并刷新 `SPCT - Count` |
 | `POST .../plugins/{file}/addmasters` | 按名补 master |
 | `POST /api/patch` | 建补丁插件（`{"fileName","isLight","records":[...]}`）；同名已加载或磁盘已存在时返回 409 `file_exists`（不会落到 GUI 弹模态框卡住） |
 | `GET /api/find?editorID&signature&file&exact&limit` | 跨插件按 EDID 查找（exact 优先用 EDID 索引，缺失时回退为按分组扫描；响应含 `edidIndexEnabled`） |
@@ -112,7 +111,6 @@ python api-client\xedit_api_client.py patch --patch-file patch.json
 - 修改仅内存态且无日志/快照（除 xEdit 自身行为外没有 undo）。
 - 超大数据记录深 `tree` 较慢——尽量用 `signature` 过滤或限制 `depth`。
 - batch `copy` 引用字段前需先通过 `masters` op 添加对应插件为 master（否则引用会被置空；先加 master 再复制）。
-- `merge-effects` **不是通用原语**：body 硬编码 SCSI/UBE 三个记录，只服务那一个种族补丁场景；通用列表合并请用 `copy` / `add-item`。
 - 规划：tree 紧凑模式、undo/快照。
 
 ---

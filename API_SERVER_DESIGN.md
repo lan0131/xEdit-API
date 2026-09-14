@@ -288,7 +288,6 @@ python api-client\xedit_api_client.py --port 7000
 - `busy` 字段当前会把“正在处理当前请求”计为 busy，语义待修正。
 - 超大记录（巨大数组/网格）的 tree 会偏慢，可加紧凑模式。
 - 元素 path 目前是 xEdit 显示名路径；可加按 signature 短路径别名。
-- `merge-effects` 不是通用原语：body 硬编码 `base`/`scsi`/`ube` 三个记录引用（SCSI-UBE 场景专用），通用需求请用 `copy` / `add-item` 组合，后续可把它下沉为示例脚本。
 
 ---
 
@@ -362,6 +361,48 @@ values:    {"values": {"RACE \\ FULL - Name": "x"}}
 
 **回归检查：** `verify_api.py --write-test --scratch-write` 会用 tree 输出的原始路径做一次 set→读回→还原的往返，
 因此这条路径只要 UI 可用就会被覆盖。
+
+---
+
+## 15. 原则确认：API 只保留通用原子能力（移除 `merge-effects`）
+
+**决策：API 面只提供通用原子能力，不保留任何"只为某个业务场景存在"的功能。**
+
+逐项审计结论（`Core/wbApiServer.pas`）：
+
+| 端点 / op | 判定 |
+|---|---|
+| `GET /api`、`/api/status`、`/api/plugins[/{file}]` | 通用 |
+| `GET .../records`、`.../records/{id}`、`/api/records/{id}`、`/api/find` | 通用 |
+| `GET .../records/{id}/tree` | 通用 |
+| `POST .../values`、`.../copy-elements`、`.../addmasters` | 通用 |
+| `POST /api/patch` | 通用（建插件 + 按记录覆盖） |
+| `POST /api/batch`：`set` / `copy` / `add-item` / `remove-item` / `create-record` / `masters` | 通用 |
+| ~~`POST .../records/{id}/merge-effects`~~ | **场景专用 → 已移除** |
+
+`merge-effects` 的问题：body 硬编码 `base`/`scsi`/`ube` 三个记录引用、写死元素名 `Actor Effects`、写死 `SPLO - Actor Effect` 模板与 `SPCT - Count` 计数刷新，只服务"SCSI 种族改动套到 UBE 种族副本上"这一个业务；任何别的合并需求都无法复用。
+
+**移除内容：** 路由分支、`HandleMergeEffects`（约 200 行）、只被它使用的 `WbApiSpellKey` 助手、`GET /api` 索引项、声明与相关注释。
+
+**能力没有损失，只是回到通用原语组合：**
+
+```json
+{ "ops": [
+  { "op": "copy",  "file": "Patch.esp", "formID": "<目标>",
+    "source": { "file": "SCSI.esp", "formID": "<源>" }, "path": "Actor Effects" },
+  { "op": "add-item", "file": "Patch.esp", "formID": "<目标>", "path": "Actor Effects",
+    "source": { "file": "UBE.esp", "formID": "<UBE源>", "path": "Actor Effects\\3" } },
+  { "op": "set", "file": "Patch.esp", "formID": "<目标>", "values": { "SPCT - Count": "12" } } ] }
+```
+
+也就是说：把"要复制哪条、要补哪条、计数刷新成多少"的决定权交回调用方（脚本/agent），API 只做通用的
+set / copy / add-item / remove-item / create-record。
+
+**回归检查：** `verify_api.py` 现在会断言 `GET /api` 索引里没有 `merge-effects`，且
+`POST .../merge-effects` 返回 404 `not_found`（旧 build 会命中 200）。
+
+**已知仍属"API 之外"的场景脚本：** 工作区根目录的 `make_scsi_ube_patch.py` 是**消费方**示例，
+它只用通用端点（`/api/patch` + `copy-elements` + `addmasters`），不依赖 `merge-effects`，因此不受影响。
 
 
 

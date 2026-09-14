@@ -13,7 +13,7 @@ A fork of **[TES5Edit/TES5Edit](https://github.com/TES5Edit/TES5Edit)** (the xEd
 - Localhost HTTP/1.1 + JSON API inside xEdit (`-api` switch).
 - Everything runs on the xEdit main thread through a job pump — results equal doing the same action in the GUI.
 - **Read**: plugins, load order, records, override chains, element trees (raw values included).
-- **Write** (in memory only): set field values, copy elements between records, merge actor-effect lists, add/remove list items, master maintenance, create patch plugins — and a **`POST /api/batch` orchestrator** that composes these into one workflow.
+- **Write** (in memory only): set field values, copy elements between records, add/remove list items, master maintenance, create patch plugins — and a **`POST /api/batch` orchestrator** that composes these into one workflow.
 - **No saving, by design**: the API cannot write plugins to disk. Persisting edits stays the user's decision and is done from the xEdit GUI (File > Save / Ctrl+S).
 - **Self discovery**: `GET /api` returns the full endpoint index for agents.
 
@@ -65,7 +65,6 @@ Conventions:
 | `GET /api/plugins/{file}/records/{formID}/tree?depth` | element tree JSON (`name/path/value/children`, raw values exposed) |
 | `POST .../records/{formID}/values` | batch-edit fields: `{"values": {"FULL - Name": "..."}}` |
 | `POST .../records/{formID}/copy-elements` | copy whole **top-level** elements by display name: `{"source":{"file","formID"},"elements":["DATA - DATA", ...]}` (for arbitrary paths use the batch `copy` op) |
-| `POST .../records/{formID}/merge-effects` | scenario-specific helper (SCSI/UBE race patching): body `{"base":{...},"scsi":{...},"ube":{...}}`, appends UBE-only Actor Effects missing from the target and refreshes `SPCT - Count` |
 | `POST .../plugins/{file}/addmasters` | add masters by name |
 | `POST /api/patch` | create a patch plugin (`{"fileName","isLight","records":[...]}`); returns 409 `file_exists` if that name is already loaded or on disk (it never falls through to the GUI, which would show a blocking modal dialog) |
 | `POST /api/batch` | generic op orchestrator (below) |
@@ -113,7 +112,6 @@ Then persist the result from the xEdit GUI — there is no save call in the clie
 - Edits are in-memory and are not journalled: there is no undo/snapshot beyond xEdit's own behaviour.
 - Huge records make deep `tree` slow — filter with `signature`, or use bounded `depth`.
 - Batch `copy` of reference fields requires the referenced plugins to already be masters (add them with a `masters` op first, then re-copy).
-- `merge-effects` is not a generic primitive — it hard-codes the three SCSI/UBE records for one specific race-patching scenario. Use `copy` / `add-item` for general list merging.
 - Roadmap: compact tree mode, undo/snapshot support.
 
 ---

@@ -56,6 +56,7 @@ python verify_api.py --patch-test --data-dir "F:\Skyrim SCSIM\Game\Data"   # 验
 | `--write-test` | 改 `FULL - Name` → 读回确认变化 → 改回原值（净变化为零，不落盘） |
 | `--patch-test` | `/api/patch` 带 `autoSave:true` 后**磁盘上没有新文件**（需 `--data-dir`） |
 | `--patch-test`（同名已存在） | 返回 409 `file_exists` 且不阻塞；旧 build 会弹模态框并冻住 API，脚本 20s 超时后报 FAIL |
+| 场景专用端点 | `POST .../merge-effects` 必须返回 404（API 只保留通用原语），且索引里不再列出它 |
 
 退出码 0 = 全部通过；有 FAIL 时脚本会提示"运行中的 exe 与源码不一致，请重新编译并替换 exe"。
 
@@ -85,7 +86,7 @@ curl -s -H "Authorization: Bearer mysecret" http://127.0.0.1:7000/api/plugins
 - `editorID` 为不区分大小写的子串匹配。
 - 长耗时查询会短暂占用 xEdit 主线程（与 GUI 里做同样操作的行为一致）。
 - `/api/plugins/{file}/records/{formid}` 用 loadOrderFormID（8 hex）查该插件内实例。
-- 客户端目前只覆盖上述子命令（**没有 save**）；`/api`、`/api/find`、`copy-elements`、`merge-effects`、
+- 客户端目前只覆盖上述子命令（**没有 save**）；`/api`、`/api/find`、`copy-elements`、
   `addmasters`、`/api/batch` 请直接 curl（见仓库 `README.md` 的端点表）。
 - **保存只能由用户在 xEdit 界面完成**：API 既没有 `/save` 端点，batch 的 `save` op 也会被拒绝；
   所有修改仅存在于内存，不保存关闭即丢弃。
