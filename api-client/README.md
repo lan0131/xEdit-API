@@ -55,6 +55,7 @@ python verify_api.py --patch-test --data-dir "F:\Skyrim SCSIM\Game\Data"   # 验
 | 读链路 | plugins / plugin / records / tree / find 均正常（证明 exe 本身健康） |
 | `--write-test` | 改 `FULL - Name` → 读回确认变化 → 改回原值（净变化为零，不落盘） |
 | `--patch-test` | `/api/patch` 带 `autoSave:true` 后**磁盘上没有新文件**（需 `--data-dir`） |
+| `--patch-test`（同名已存在） | 返回 409 `file_exists` 且不阻塞；旧 build 会弹模态框并冻住 API，脚本 20s 超时后报 FAIL |
 
 退出码 0 = 全部通过；有 FAIL 时脚本会提示"运行中的 exe 与源码不一致，请重新编译并替换 exe"。
 

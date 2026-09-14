@@ -18,12 +18,11 @@ What it proves (always run):
 Opt-in extras:
   --write-test   exercise a real field edit (set + verify + restore original)
   --patch-test   create a throwaway plugin with autoSave=true to prove the flag is
-                 ignored and no file appears on disk. WARNING: this adds an
-                 in-memory plugin to the xEdit session; do NOT press Save in the
-                 GUI afterwards, or that junk plugin will be written to disk.
-                 (Also: /api/patch pops a modal dialog if the file name already
-                 exists, which blocks the API until someone clicks OK - hence the
-                 unique name and the --data-dir pre-check.)
+                 ignored and no file appears on disk, and prove that re-using an
+                 existing plugin name is refused with 409 instead of popping a modal
+                 dialog in the GUI. WARNING: this adds an in-memory plugin to the
+                 xEdit session; do NOT press Save in the GUI afterwards, or that junk
+                 plugin will be written to disk.
 
 Zero third-party dependencies (urllib only).
 
@@ -289,8 +288,25 @@ def check_write_roundtrip(port, token, sample):
            f"original={original!r} read back {got2!r} - net change is zero, nothing saved")
 
 
-def check_patch_autosave(port, token, data_dir):
-    """autoSave must be gone: /api/patch must not write a file to disk."""
+def check_patch_autosave(port, token, data_dir, existing_name):
+    """autoSave must be gone, and an existing name must be refused without a modal dialog."""
+    # Regression first: /api/patch used to fall through to frmMain.AddNewFileName,
+    # which pops a modal "file exists already" dialog and blocks the whole API.
+    if existing_name:
+        body = json.dumps({"fileName": existing_name, "isLight": False, "records": []})
+        t0 = time.time()
+        code, data, raw = call(port, "/api/patch", token, method="POST", body=body, timeout=20)
+        dt = time.time() - t0
+        err = (data or {}).get("error") or {}
+        ok = code == 409 and err.get("code") == "file_exists"
+        detail = f"file={existing_name} HTTP {code} code={err.get('code')} in {dt:.1f}s"
+        if code is None:
+            detail += (" - TIMEOUT: the build still reaches the GUI, which is showing a modal "
+                       "dialog; click OK in xEdit to unblock the API")
+        record(PASS if ok else FAIL, "/api/patch refuses an existing name (no modal dialog)", detail)
+    else:
+        record(SKIP, "/api/patch refuses an existing name", "no loaded plugin name available")
+
     if not data_dir or not os.path.isdir(data_dir):
         record(SKIP, "/api/patch autoSave ignored", "pass --data-dir to check the Data folder")
         return
@@ -350,7 +366,8 @@ def main():
     else:
         record(SKIP, "write round-trip", "pass --write-test to exercise an edit (in memory)")
     if args.patch_test:
-        check_patch_autosave(args.port, args.token, args.data_dir)
+        check_patch_autosave(args.port, args.token, args.data_dir,
+                             plugins[0].get("fileName") if plugins else None)
     else:
         record(SKIP, "/api/patch autoSave ignored", "pass --patch-test --data-dir <Data>")
 

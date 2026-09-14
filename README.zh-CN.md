@@ -66,7 +66,7 @@ GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。API 做的修�
 | `POST .../records/{formID}/copy-elements` | 按显示名复制**顶层元素**：`{"source":{"file","formID"},"elements":["DATA - DATA", ...]}`（要按任意路径复制请用 batch 的 `copy` op） |
 | `POST .../records/{formID}/merge-effects` | 场景专用助手（SCSI/UBE 种族补丁）：body `{"base":{...},"scsi":{...},"ube":{...}}`，把目标缺失的 UBE 专有 Actor Effects 追加进去并刷新 `SPCT - Count` |
 | `POST .../plugins/{file}/addmasters` | 按名补 master |
-| `POST /api/patch` | 建补丁插件（`{"fileName","isLight","records":[...]}`） |
+| `POST /api/patch` | 建补丁插件（`{"fileName","isLight","records":[...]}`）；同名已加载或磁盘已存在时返回 409 `file_exists`（不会落到 GUI 弹模态框卡住） |
 | `GET /api/find?editorID&signature&file&exact&limit` | 跨插件按 EDID 查找（exact 优先用 EDID 索引，缺失时回退为按分组扫描；响应含 `edidIndexEnabled`） |
 | `POST /api/batch` | 通用原语编排器（见下） |
 

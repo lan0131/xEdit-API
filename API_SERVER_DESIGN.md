@@ -312,5 +312,26 @@ python api-client\xedit_api_client.py --port 7000
 
 **影响：** 客户端脚本不再有“一步落盘”的收尾动作——调用方在改完后必须提示用户去 GUI 保存；未保存即退出，所有改动丢弃（与 GUI 行为一致）。
 
+---
+
+## 13. M4 附带修复：`/api/patch` 不再触发 GUI 模态对话框
+
+`POST /api/patch` 原先直接调用 `frmMain.AddNewFileName`，而后者在目标文件名已存在时会执行
+`ShowMessage('A file of that name exists already.')`。模态框阻塞 VCL 主线程，而 API 的 job 正跑在主线程上
+——结果是**整个 API 被冻住**，直到有人在 GUI 里点掉它。
+
+修复（全部在 `HandlePatch` 内、调用 GUI 之前完成）：
+
+| 情况 | 现在返回 |
+|---|---|
+| 文件名含非法字符 `\/*?:"<>|` | 400 `bad_file_name` |
+| 同名插件已加载在会话里 | 409 `file_exists` |
+| 数据目录中同名文件已存在 | 409 `file_exists` |
+| 调用 GUI 时抛异常且消息含 `exists already`（`wbNewFile` 的内存重名） | 409 `file_exists` |
+| 调用 GUI 时抛其它异常 | 400 `create_failed` |
+
+对应的回归检查在 `api-client/verify_api.py --patch-test`：用一个已存在的插件名请求 `/api/patch`，必须在
+20 秒内返回 409（旧 build 会超时，脚本提示"GUI 里有模态框，去点掉"）。
+
 
 

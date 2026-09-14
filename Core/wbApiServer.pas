@@ -182,6 +182,23 @@ var
 {  helpers                                                                    }
 { =========================================================================== }
 
+// Mirrors xeMainForm.IsValidWindowsFileName (which is local to that unit).
+// Used by HandlePatch so that an invalid name is rejected with a clean 400
+// instead of raising inside frmMain.AddNewFileName.
+function wbApiIsValidPluginFileName(const aFileName: string): Boolean;
+const
+  InvalidChars = '\/*?:"<>|';
+var
+  c : Char;
+begin
+  Result := aFileName <> '';
+  if not Result then
+    Exit;
+  for c in aFileName do
+    if Pos(c, InvalidChars) > 0 then
+      Exit(False);
+end;
+
 function wbApiJsonEscape(const aValue: string): string;
 var
   i : Integer;
@@ -2634,6 +2651,25 @@ begin
     if ExtractFileExt(fileName) = '' then
       fileName := fileName + '.esp';
 
+    // Guard rails before touching the GUI: frmMain.AddNewFileName pops a modal
+    // "A file of that name exists already." dialog, which would block the main
+    // thread (and with it this whole API) until somebody clicks it.
+    if not wbApiIsValidPluginFileName(fileName) then begin
+      RespondError(aJob, 400, 'bad_file_name',
+        'Invalid plugin file name: ' + fileName + ' (characters \/*?:"<>| are not allowed)');
+      Exit;
+    end;
+    if FindPlugin(fileName) <> nil then begin
+      RespondError(aJob, 409, 'file_exists',
+        'A plugin with that name is already loaded: ' + fileName);
+      Exit;
+    end;
+    if FileExists(wbDataPath + fileName) then begin
+      RespondError(aJob, 409, 'file_exists',
+        'A plugin file with that name already exists in the data folder: ' + fileName);
+      Exit;
+    end;
+
     isLight  := False;
     if jo.Contains('isLight') then
       isLight := jo.B['isLight'];
@@ -2644,7 +2680,17 @@ begin
       Exit;
     end;
 
-    newFile := wbApiServerAddFileHandler(fileName, isLight, False);
+    try
+      newFile := wbApiServerAddFileHandler(fileName, isLight, False);
+    except
+      on E: Exception do begin
+        if ContainsText(E.Message, 'exists already') then
+          RespondError(aJob, 409, 'file_exists', E.Message)
+        else
+          RespondError(aJob, 400, 'create_failed', E.Message);
+        Exit;
+      end;
+    end;
     if newFile = nil then begin
       RespondError(aJob, 400, 'create_failed', 'Could not create plugin file: ' + fileName);
       Exit;

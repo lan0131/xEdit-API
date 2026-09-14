@@ -67,7 +67,7 @@ Conventions:
 | `POST .../records/{formID}/copy-elements` | copy whole **top-level** elements by display name: `{"source":{"file","formID"},"elements":["DATA - DATA", ...]}` (for arbitrary paths use the batch `copy` op) |
 | `POST .../records/{formID}/merge-effects` | scenario-specific helper (SCSI/UBE race patching): body `{"base":{...},"scsi":{...},"ube":{...}}`, appends UBE-only Actor Effects missing from the target and refreshes `SPCT - Count` |
 | `POST .../plugins/{file}/addmasters` | add masters by name |
-| `POST /api/patch` | create a patch plugin (`{"fileName","isLight","records":[...]}`) |
+| `POST /api/patch` | create a patch plugin (`{"fileName","isLight","records":[...]}`); returns 409 `file_exists` if that name is already loaded or on disk (it never falls through to the GUI, which would show a blocking modal dialog) |
 | `POST /api/batch` | generic op orchestrator (below) |
 
 ### `POST /api/batch` — generic primitive orchestrator
