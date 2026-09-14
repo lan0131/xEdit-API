@@ -51,7 +51,7 @@ Conventions:
 - Success `{"ok": true, ...}`; failure `{"ok": false, "error": {"code", "message"}}`.
 - FormIDs are 8-hex load-order FormIDs (e.g. `030008D2`).
 - Auth header `Authorization: Bearer <token>` when `-apitoken` is used (`/api/status` stays open).
-- **Element paths**: display-name segments joined by `\`, numeric segments select list indexes (`Actor Effects\0`, `Keywords\KWDA - Keywords\0`, `DATA - DATA\Body Biped Object`).
+- **Element paths**: display-name segments joined by `\`, numeric segments select list indexes (`Actor Effects\0`, `Keywords\KWDA - Keywords\0`, `DATA - DATA\Body Biped Object`). Paths copied verbatim from `tree` work as-is — the record-root prefix it prints (`RACE \ FULL - Name`) is tolerated — and a bare signature (`FULL`) still resolves through xEdit's own syntax.
 
 | Method & path | Purpose |
 |---|---|

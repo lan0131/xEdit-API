@@ -747,7 +747,9 @@ begin
       if n = 2 then begin
         // /api/plugins/{fileName}
         if f <> nil then
-          RespondJson(aJob, 200, PluginToJson(f, 0))
+          // prepend "ok" so this endpoint follows the same convention as the
+          // rest of the API, without nesting the plugin object
+          RespondJson(aJob, 200, '{"ok":true,' + Copy(PluginToJson(f, 0), 2, MaxInt))
         else
           RespondError(aJob, 404, 'not_found', 'Plugin not loaded: ' + parts[1]);
         Exit;
@@ -1166,6 +1168,8 @@ var
   i, changed, failed : Integer;
   name, val, err : string;
   okBody : Boolean;
+  container : IwbContainerElementRef;
+  idx       : Integer;
 begin
   if aJob.Request.Method <> 'POST' then begin
     RespondError(aJob, 405, 'method_not_allowed', 'This endpoint requires POST');
@@ -1218,7 +1222,12 @@ begin
         end;
         err := '';
         try
-          target := rec.ElementByPath[name];
+          // Same resolver as the batch engine, so display-name paths copied
+          // straight out of the tree endpoint work here too; fall back to
+          // xEdit's native syntax (e.g. a bare signature like "FULL").
+          target := ResolveElement(rec, name, container, idx);
+          if target = nil then
+            target := rec.ElementByPath[name];
           if target = nil then
             err := 'path not found'
           else if not target.IsEditable then
@@ -1612,22 +1621,30 @@ function TwbApiServer.ResolveElement(const aElement: IwbElement; const aPath: st
                                      out aContainer: IwbContainerElementRef;
                                      out aIndex: Integer): IwbElement;
 var
-  cur    : IwbElement;
-  tokens : TArray<string>;
-  t      : string;
-  k, n   : Integer;
-  cef    : IwbContainerElementRef;
-  el     : IwbElement;
+  cur      : IwbElement;
+  tokens   : TArray<string>;
+  t        : string;
+  k, n     : Integer;
+  cef      : IwbContainerElementRef;
+  el       : IwbElement;
+  mr       : IwbMainRecord;
+  rootName : string;
 begin
   Result := nil;
   aContainer := nil;
   aIndex := -1;
   cur := aElement;
+  // The element tree prints paths prefixed with the record root (a RACE record
+  // yields "RACE \ FULL - Name"), so accept those verbatim by ignoring a
+  // leading token that is merely the record's own signature.
+  rootName := '';
+  if Supports(aElement, IwbMainRecord, mr) then
+    rootName := wbApiSignatureToString(mr.Signature);
   tokens := aPath.Split(['\'], TStringSplitOptions.ExcludeEmpty);
   for k := 0 to High(tokens) do begin
     t := Trim(tokens[k]);
-    if (k = 0) and SameText(t, 'RACE') then
-      Continue;                     // tolerate an optional leading "RACE" token
+    if (k = 0) and (rootName <> '') and SameText(t, rootName) then
+      Continue;                     // record-root prefix, not an element name
     if t = '' then
       Continue;
     if not Supports(cur, IwbContainerElementRef, cef) then

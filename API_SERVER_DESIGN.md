@@ -333,5 +333,35 @@ python api-client\xedit_api_client.py --port 7000
 对应的回归检查在 `api-client/verify_api.py --patch-test`：用一个已存在的插件名请求 `/api/patch`，必须在
 20 秒内返回 409（旧 build 会超时，脚本提示"GUI 里有模态框，去点掉"）。
 
+---
+
+## 14. M4 修复：统一元素路径解析（实测发现）
+
+**现象（真机实测）：** 从 `GET .../tree` 拿到的路径直接喂给 `POST .../values` 会失败：
+
+```
+tree 里:   "path": "RACE \ FULL - Name"
+values:    {"values": {"RACE \\ FULL - Name": "x"}}
+           → {"ok":false,...,"error":"path not found"}
+```
+
+**根因：** 两条路径解析链路不一致：
+
+| 链路 | 实现 | 行为 |
+|---|---|---|
+| `POST .../records/{id}/values` | xEdit 原生 `IwbElement.ElementByPath` | 只认 xEdit 自己的语法（`FULL - Name`、或裸 signature `FULL`），**不认** tree 打印的记录根前缀 |
+| `POST /api/batch` 的 `set`/`copy`/`add-item`/`remove-item`/`create-record` | 自己的 `ResolveElement` | 认显示名逐段匹配 + 数字下标，且当时只有一条 **硬编码** `SameText(t, 'RACE')` 的首段容错 |
+
+于是 README 承诺的"照抄 tree 的 path 去改"在主端点上根本不成立。
+
+**修复：**
+
+1. `ResolveElement` 的首段容错从硬编码 `RACE` 改为**通用规则**：首段等于该记录自身的 signature（`wbApiSignatureToString(mr.Signature)`）时跳过 —— 于是 `WEAP \ FULL - Name`、`RACE \ FULL - Name` 都能用。
+2. `HandleRecordValues` 改为**先走 `ResolveElement`，失败再回退原生 `ElementByPath`**：既让 tree 路径开箱可用，又保留 xEdit 原生语法（裸 signature 等）不回归。
+3. `GET /api/plugins/{fileName}` 补上 `"ok":true`（此前返回裸插件对象，是全 API 里唯一不符合统一响应约定的端点；字段仍是平铺的，不新增嵌套）。
+
+**回归检查：** `verify_api.py --write-test --scratch-write` 会用 tree 输出的原始路径做一次 set→读回→还原的往返，
+因此这条路径只要 UI 可用就会被覆盖。
+
 
 

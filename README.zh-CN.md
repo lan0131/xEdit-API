@@ -51,7 +51,7 @@ GUI 加载插件完成后 API 就绪（`pluginsLoaded: true`）。API 做的修�
 - 成功 `{"ok":true,...}`；失败 `{"ok":false,"error":{"code","message"}}`。
 - FormID 一律 8 位十六进制加载顺序 FormID（如 `030008D2`）。
 - 启用 `-apitoken` 后除 `/api/status` 外都要带 `Authorization: Bearer <token>`。
-- **元素路径**：显示名段用 `\` 连接，数字段表示列表下标（`Actor Effects\0`、`Keywords\KWDA - Keywords\0`、`DATA - DATA\Body Biped Object`）。
+- **元素路径**：显示名段用 `\` 连接，数字段表示列表下标（`Actor Effects\0`、`Keywords\KWDA - Keywords\0`、`DATA - DATA\Body Biped Object`）。从 `tree` 直接照抄的路径可以直接用——它带的记录根前缀（`RACE \ FULL - Name`）会被容忍；只写 signature（`FULL`）也仍按 xEdit 原生语法解析。
 
 | 方法与路径 | 说明 |
 |---|---|

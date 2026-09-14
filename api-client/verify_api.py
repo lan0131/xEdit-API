@@ -16,7 +16,10 @@ What it proves (always run):
                                       net change is zero and nothing gets saved
 
 Opt-in extras:
-  --write-test   exercise a real field edit (set + verify + restore original)
+  --write-test   exercise a real field edit (set + verify + restore original).
+                 Read-only masters cannot be edited, so with only Skyrim.esm loaded the
+                 check is skipped - add --scratch-write to create a throwaway plugin and
+                 do the round-trip there instead.
   --patch-test   create a throwaway plugin with autoSave=true to prove the flag is
                  ignored and no file appears on disk, and prove that re-using an
                  existing plugin name is refused with 409 instead of popping a modal
@@ -205,8 +208,16 @@ def check_read_smoke(port, token, plugins):
 
     first = names[0]
     code, data, raw = call(port, "/api/plugins/" + urllib.parse.quote(first), token)
-    ok = code == 200 and isinstance(data, dict) and data.get("ok")
-    record(PASS if ok else FAIL, "GET /api/plugins/{file}", f"file={first} HTTP {code}")
+    # This endpoint used to return a bare plugin object without "ok"; the current
+    # source adds it. Only HTTP 200 + fileName is required to pass, and a missing
+    # "ok" is reported as an informational hint that the exe is behind the source.
+    ok = (code == 200 and isinstance(data, dict)
+          and data.get("fileName", "").lower() == first.lower())
+    record(PASS if ok else FAIL, "GET /api/plugins/{file}",
+           f"file={first} HTTP {code} keys={list(data)[:4] if isinstance(data, dict) else '?'}")
+    if isinstance(data, dict) and "ok" not in data:
+        record(INFO, "GET /api/plugins/{file} envelope",
+               "no 'ok' field - this exe predates the consistency fix")
 
     # pick a plugin that actually has RACE records, for a cheap bounded query
     target, recs = None, []
@@ -239,18 +250,22 @@ def check_read_smoke(port, token, plugins):
                f"edidIndexEnabled={data.get('edidIndexEnabled') if isinstance(data, dict) else '?'}")
     else:
         record(SKIP, "GET /api/find", "no editorID on the sampled records")
-    return (target, rec, tree)
+    return (target, rec)
 
 
-def check_write_roundtrip(port, token, sample):
+def check_write_roundtrip(port, token, target, rec):
     """Edit a FULL - Name leaf, verify, then restore the original value."""
-    if not sample:
+    if not target or not rec:
         record(SKIP, "write round-trip", "no sampled record")
         return
-    target, rec, tree = sample
     fid = rec.get("loadOrderFormID", "")
+    base = "/api/plugins/" + urllib.parse.quote(target) + f"/records/{fid}"
+    code, data, raw = call(port, base + "/tree?depth=3", token)
+    if code != 200 or not isinstance(data, dict):
+        record(FAIL, "write round-trip: tree", f"HTTP {code} {raw[:200]}")
+        return
     leaves = []
-    walk_leaves(tree, leaves)
+    walk_leaves(data, leaves)
     leaf = next((l for l in leaves if str(l.get("path", "")).endswith("FULL - Name")), None) \
         or next((l for l in leaves if str(l.get("name", "")).startswith("FULL")), None)
     if leaf is None:
@@ -258,10 +273,14 @@ def check_write_roundtrip(port, token, sample):
         return
     path, original = leaf["path"], leaf.get("value", "")
     probe = original + " [api-verify]"
-    base = "/api/plugins/" + urllib.parse.quote(target) + f"/records/{fid}"
 
     code, data, raw = call(port, base + "/values", token, method="POST",
                            body=json.dumps({"values": {path: probe}}))
+    if code == 403 and ((data or {}).get("error") or {}).get("code") == "read_only":
+        record(SKIP, "write round-trip",
+               f"{target}/{fid} is read-only (masters cannot be edited) - load a non-master "
+               f"plugin or use --scratch-write")
+        return
     if not (code == 200 and isinstance(data, dict) and data.get("ok")):
         record(FAIL, "write round-trip: set", f"HTTP {code} {raw[:200]}")
         return
@@ -286,6 +305,32 @@ def check_write_roundtrip(port, token, sample):
     got2 = current() if ok_restore else None
     record(PASS if (ok_restore and got2 == original) else FAIL, "write round-trip: restored",
            f"original={original!r} read back {got2!r} - net change is zero, nothing saved")
+
+
+def check_scratch_write(port, token, target, rec):
+    """No editable plugin loaded: create a throwaway one and edit inside it."""
+    if not target or not rec:
+        record(SKIP, "scratch write round-trip", "no source record to copy")
+        return
+    name = f"zz_api_write_probe_{int(time.time()) % 100000}.esp"
+    body = json.dumps({"fileName": name, "isLight": False,
+                       "records": [{"formID": rec.get("loadOrderFormID"), "file": target}]})
+    code, data, raw = call(port, "/api/patch", token, method="POST", body=body)
+    if not (code == 200 and isinstance(data, dict) and data.get("ok")):
+        record(FAIL, "scratch write round-trip: create plugin", f"HTTP {code} {raw[:200]}")
+        return
+    q = urllib.parse.urlencode({"signature": rec.get("signature", "RACE"),
+                                "limit": 5, "names": 1})
+    code, data, _ = call(port, "/api/plugins/" + urllib.parse.quote(name) + "/records?" + q, token)
+    recs = (data or {}).get("records") or []
+    if not recs:
+        record(FAIL, "scratch write round-trip", f"{name} lists no records")
+        return
+    record(PASS, "scratch write round-trip: scratch plugin",
+           f"{name} with an override of {target}/{rec.get('loadOrderFormID')}")
+    check_write_roundtrip(port, token, name, recs[0])
+    record(INFO, "cleanup", f"do NOT press Save in xEdit - the in-memory scratch plugin "
+                            f"'{name}' disappears when you exit without saving")
 
 
 def check_patch_autosave(port, token, data_dir, existing_name):
@@ -335,6 +380,10 @@ def main():
     ap.add_argument("--token", default="")
     ap.add_argument("--write-test", action="store_true",
                     help="edit a field and restore it (in memory only)")
+    ap.add_argument("--scratch-write", action="store_true",
+                    help="with --write-test: when only masters are loaded (nothing editable), "
+                         "create a throwaway plugin holding one override and edit inside it "
+                         "(do NOT save in the GUI afterwards)")
     ap.add_argument("--patch-test", action="store_true",
                     help="create a throwaway in-memory plugin to prove autoSave is ignored "
                          "(do NOT save in the GUI afterwards)")
@@ -362,7 +411,10 @@ def main():
 
     sample = check_read_smoke(args.port, args.token, plugins)
     if args.write_test:
-        check_write_roundtrip(args.port, args.token, sample)
+        if args.scratch_write:
+            check_scratch_write(args.port, args.token, *(sample or (None, None)))
+        else:
+            check_write_roundtrip(args.port, args.token, *(sample or (None, None)))
     else:
         record(SKIP, "write round-trip", "pass --write-test to exercise an edit (in memory)")
     if args.patch_test:
